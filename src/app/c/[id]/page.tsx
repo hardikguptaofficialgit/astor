@@ -20,6 +20,20 @@ export default async function ConversationPage({
   const initialMessages: UIMessage[] = conversation.messages.map((m) => {
     const parts: UIMessage['parts'] = [{ type: 'text', text: m.content }];
 
+    // Restore saved parts from parts_json (e.g. data-recall)
+    if (m.parts_json) {
+      try {
+        const saved = JSON.parse(m.parts_json);
+        if (Array.isArray(saved)) {
+          for (const p of saved) {
+            if (p && typeof p === 'object' && p.type === 'data-recall') {
+              parts.push(p as UIMessage['parts'][number]);
+            }
+          }
+        }
+      } catch {}
+    }
+
     if (m.sources && m.sources.length > 0) {
       parts.push({
         type: 'dynamic-tool',
@@ -36,7 +50,12 @@ export default async function ConversationPage({
     return {
       id: m.id,
       role: m.role,
+      createdAt: m.created_at ? new Date(m.created_at) : undefined,
       parts,
+      // Metadata carries local_date
+      metadata: {
+        local_date: m.local_date,
+      },
     };
   });
 

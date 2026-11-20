@@ -4,6 +4,9 @@ import {
   smoothStream,
   ModelMessage,
   UIMessage,
+  toUIMessageStream,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
 } from 'ai';
 import { getModelProvider, effort } from '../llm/provider';
 import { STATIC_SYSTEM_PROMPT } from '../prompt/system';
@@ -18,6 +21,10 @@ import {
   getNextMessageSeq,
 } from '../db';
 import { getNowIST } from '../utils/date';
+import { routeUserMessage, RouteResult } from './router';
+import { recallPastTurns, RecallResult } from '../memory/recall';
+import { buildReplayMessages } from '../history/replay';
+import { getSupermemoryClient } from '../memory/supermemory';
 
 export interface RunTurnOptions {
   conversationId: string;
@@ -42,57 +49,20 @@ function extractUserText(msg: UIMessage): string {
 }
 
 /**
- * Replays past conversation history into model-compatible messages:
- * - Assistant answers are capped (max 3k chars), stripped of internal reasoning or tool payloads.
- * - User messages retain their original text.
- * - This creates an append-only, deterministic prefix that maximizes Meta prefix caching.
- */
-function buildReplayMessages(
-  conversationId: string,
-  currentUserMessageId: string
-): ModelMessage[] {
-  const conv = getConversationById(conversationId);
-  if (!conv || !conv.messages || conv.messages.length === 0) {
-    return [];
-  }
-
-  const result: ModelMessage[] = [];
-
-  for (const m of conv.messages) {
-    // Skip the current user message being processed (it will be added with fresh volatile context)
-    if (m.id === currentUserMessageId) {
-      continue;
-    }
-
-    if (m.role === 'user') {
-      result.push({
-        role: 'user',
-        content: m.model_text || m.content,
-      });
-    } else if (m.role === 'assistant') {
-      // Replay clean assistant answer text only (never reasoning or raw tool payloads)
-      const cleanText = (m.content || '').slice(0, 3000);
-      result.push({
-        role: 'assistant',
-        content: cleanText,
-      });
-    }
-  }
-
-  return result;
-}
-
-/**
  * Runs a turn for the Astor agent.
- * Steps:
+ * Steps (§2.2):
  * 1. Persist user message immediately in SQLite.
- * 2. Build stable request (static system prompt + append-only history + volatile user context).
- * 3. Run streamText with at most 3 steps and low reasoning effort.
- * 4. web_search runs parallel queries, dedupes, caps 2/domain, top 8, assigns [n].
- * 5. On finish: save assistant reply, persist sources, and validate [n] citations.
+ * 2. Router + date resolver detects intent (chat | search | recall | reverify-cue).
+ * 3. Recall executes in code before model if mode != normal, injected as <past_turns>.
+ * 4. Build stable request (static system prompt + append-only history + volatile user context).
+ * 5. Run streamText with bounded steps (at most 3).
+ *    If pure recall: toolChoice 'none' to answer directly from history without web search.
+ * 6. web_search runs parallel queries if enabled, dedupes, caps 2/domain, top 8, assigns [n].
+ * 7. On finish: save assistant reply, persist sources, validate [n] citations.
+ *    Fire-and-forget: Supermemory outbox enqueue and background process.
  */
 export async function runTurn({ conversationId, messages, signal }: RunTurnOptions) {
-  const { localDate: todayDate, formatted: nowFormatted } = getNowIST();
+  const { localDate: todayDate, formatted: nowFormatted, epochMs } = getNowIST();
 
   // Find latest user message
   const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
@@ -104,23 +74,48 @@ export async function runTurn({ conversationId, messages, signal }: RunTurnOptio
   const userMsgId = lastUserMsg.id || crypto.randomUUID();
   const userSeq = getNextMessageSeq(conversationId);
 
+  // Step 2 & 3: Route user message & run recall if needed
+  const route: RouteResult = routeUserMessage(userText);
+  let recallResult: RecallResult | null = null;
+
+  if (route.label === 'recall' || route.label === 'reverify-cue') {
+    recallResult = await recallPastTurns({
+      dateRange: route.dateRange,
+      query: userText,
+      currentConversationId: conversationId,
+    });
+  }
+
+  // Determine mode
+  const mode = route.label === 'reverify-cue'
+    ? 'reverify'
+    : route.label === 'recall'
+      ? 'recall'
+      : 'normal';
+
   // Per-turn volatile context appended to user message
   const turnContext = buildTurnContext({
     nowFormatted,
-    mode: 'normal',
+    mode,
+    pastTurns: recallResult?.pastTurnsXml,
   });
   const modelUserText = `${userText}${turnContext}`;
 
-  // Step 1: Persist user message NOW in SQLite
+  // Step 1: Persist user message NOW in SQLite with model_text for stable replay
   saveMessage(userMsgId, conversationId, 'user', userText, new Date().toISOString(), {
     seq: userSeq,
     local_date: todayDate,
-    mode: 'normal',
+    mode,
     model_text: modelUserText,
+    text: userText,
   });
 
+  // Fetch full conversation history from SQLite for replay
+  const conv = getConversationById(conversationId);
+  const convMessages = conv?.messages || [];
+
   // Build model messages: replayed history + current user message
-  const replayMessages = buildReplayMessages(conversationId, userMsgId);
+  const replayMessages = buildReplayMessages(convMessages, { skipMessageId: userMsgId });
   const modelMessages: ModelMessage[] = [
     ...replayMessages,
     {
@@ -144,7 +139,7 @@ export async function runTurn({ conversationId, messages, signal }: RunTurnOptio
 
   const assistantMsgId = crypto.randomUUID();
 
-  // Step 5: streamText agent loop (stopWhen <= 3 steps)
+  // Step 5: streamText agent loop
   const result = streamText({
     model: getModelProvider(),
     system: STATIC_SYSTEM_PROMPT,
@@ -154,8 +149,16 @@ export async function runTurn({ conversationId, messages, signal }: RunTurnOptio
     },
     stopWhen: isStepCount(3),
     prepareStep: ({ stepNumber }) => {
+      // Pure recall questions ("What did I ask you on 3 November?") must answer
+      // with exact question(s) and their times WITHOUT web search.
+      if (route.isPureRecall) {
+        return {
+          providerOptions: effort('low'),
+          toolChoice: 'none',
+        };
+      }
+
       // Step 0: low effort to generate search queries (or quick direct answer)
-      // Step 1: low/medium effort to answer after search
       // Step >= 2: toolChoice 'none' to force final answer while keeping tools in schema for prompt caching
       const effortLevel = stepNumber === 0 ? 'low' : 'low';
       return {
@@ -178,6 +181,15 @@ export async function runTurn({ conversationId, messages, signal }: RunTurnOptio
 
       const assistantSeq = getNextMessageSeq(conversationId);
 
+      // Build parts_json for persistence
+      const savedParts: unknown[] = [{ type: 'text', text: validatedText }];
+      if (recallResult?.recalledTurns && recallResult.recalledTurns.length > 0) {
+        savedParts.push({
+          type: 'data-recall',
+          data: { turns: recallResult.recalledTurns },
+        });
+      }
+
       // Persist assistant message in SQLite
       saveMessage(
         assistantMsgId,
@@ -188,7 +200,9 @@ export async function runTurn({ conversationId, messages, signal }: RunTurnOptio
         {
           seq: assistantSeq,
           local_date: todayDate,
-          mode: 'normal',
+          mode,
+          text: validatedText,
+          parts_json: JSON.stringify(savedParts),
           finish: typeof finishReason === 'object' ? JSON.stringify(finishReason) : String(finishReason),
           tokens_in: usage?.inputTokens,
           tokens_cached: (usage as unknown as { cachedTokens?: number })?.cachedTokens ?? 0,
@@ -203,11 +217,66 @@ export async function runTurn({ conversationId, messages, signal }: RunTurnOptio
         saveSources(assistantMsgId, discoveredSources);
       }
 
-      // Clean hooks for Memory (M3) and Re-verify (M4):
-      // - Supermemory outbox row enqueue
-      // - Compaction check if history exceeds token budget
+      // Step 8 fire-and-forget: Supermemory add and process outbox
+      try {
+        const supermemory = getSupermemoryClient();
+        await supermemory.add({
+          conversationId,
+          userMessageId: userMsgId,
+          assistantMessageId: assistantMsgId,
+          question: userText,
+          answer: validatedText,
+          dateStr: todayDate,
+          formattedDate: nowFormatted,
+          epochMs,
+          sources: discoveredSources.map((s) => ({ title: s.title, domain: s.domain })),
+        });
+        // Non-blocking outbox check
+        supermemory.processOutbox().catch(() => {});
+      } catch (smErr) {
+        console.error('Supermemory background error (fail-open):', smErr);
+      }
     },
   });
 
-  return result;
+  return {
+    ...result,
+    recallResult,
+    route,
+    toUIMessageStreamResponse: (options?: { sendReasoning?: boolean }) => {
+      const stream = createUIMessageStream({
+        originalMessages: messages,
+        execute: async ({ writer }) => {
+          if (recallResult) {
+            // Transient status part for "Checking your history…"
+            const writeChunk = writer.write as (chunk: unknown) => void;
+            writeChunk({
+              type: 'data-status',
+              data: { text: 'Checking your history…' },
+              transient: true,
+            });
+
+            if (recallResult.recalledTurns.length > 0) {
+              writeChunk({
+                type: 'data-recall',
+                data: { turns: recallResult.recalledTurns },
+              });
+            }
+          }
+
+          writer.merge(
+            toUIMessageStream({
+              stream: result.stream,
+              sendReasoning: options?.sendReasoning ?? true,
+              originalMessages: messages,
+            })
+          );
+        },
+      });
+
+      return createUIMessageStreamResponse({
+        stream,
+      });
+    },
+  };
 }

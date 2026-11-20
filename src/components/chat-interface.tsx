@@ -32,6 +32,8 @@ import { AstorMark } from './astor-mark';
 import { CodeBlock } from './code-block';
 import { Sidebar, ConversationItem } from './sidebar';
 import { NumberedSource } from '@/lib/db';
+import { formatISTDateTime, formatISTDate } from '@/lib/utils/date';
+import type { RecalledTurn } from '@/lib/memory/recall';
 
 interface WebSearchToolState {
   isSearching: boolean;
@@ -85,6 +87,34 @@ function getWebSearchState(message: UIMessage): WebSearchToolState {
   }
 
   return { isSearching, queries, sources };
+}
+
+function getRecalledTurns(message: UIMessage): RecalledTurn[] {
+  if (!message.parts || !Array.isArray(message.parts)) return [];
+  for (const part of message.parts) {
+    const p = part as Record<string, unknown>;
+    if (p.type === 'data-recall' && p.data && typeof p.data === 'object') {
+      const dataObj = p.data as { turns?: RecalledTurn[] };
+      if (dataObj.turns && Array.isArray(dataObj.turns)) {
+        return dataObj.turns;
+      }
+    }
+  }
+  return [];
+}
+
+function getStatusMessage(message?: UIMessage): string | null {
+  if (!message?.parts || !Array.isArray(message.parts)) return null;
+  for (const part of message.parts) {
+    const p = part as Record<string, unknown>;
+    if (p.type === 'data-status') {
+      if (typeof p.data === 'string') return p.data;
+      if (p.data && typeof p.data === 'object' && 'text' in p.data) {
+        return (p.data as { text: string }).text || null;
+      }
+    }
+  }
+  return null;
 }
 
 function formatDisplayDate(dateStr?: string | null): string {
@@ -744,11 +774,26 @@ export function ChatInterface({
                 const isLast = idx === messages.length - 1;
 
                 if (isUser) {
+                  const msgCreatedAt = (message as unknown as { createdAt?: Date | string })?.createdAt;
+                  const userDateFormatted = msgCreatedAt
+                    ? formatISTDateTime(msgCreatedAt)
+                    : (message as unknown as { metadata?: { local_date?: string } })?.metadata?.local_date
+                      ? formatISTDate((message as unknown as { metadata: { local_date: string } }).metadata.local_date)
+                      : null;
+
                   return (
-                    <div key={message.id} className="flex justify-end">
-                      <div className="max-w-[75%] rounded-[14px] px-4 py-2.5 bg-[var(--user-bubble)] text-[var(--text)] text-[15px] font-sans leading-relaxed shadow-2xs whitespace-pre-wrap selection:bg-[var(--hover)]">
+                    <div key={message.id} className="flex flex-col items-end group/user">
+                      <div
+                        className="max-w-[75%] rounded-[14px] px-4 py-2.5 bg-[var(--user-bubble)] text-[var(--text)] text-[15px] font-sans leading-relaxed shadow-2xs whitespace-pre-wrap selection:bg-[var(--hover)] cursor-default transition-all"
+                        title={userDateFormatted ? `Sent on ${userDateFormatted}` : undefined}
+                      >
                         {text}
                       </div>
+                      {userDateFormatted && (
+                        <span className="text-[10px] text-[var(--secondary)] font-mono opacity-0 group-hover/user:opacity-80 transition-opacity mt-1 pr-1 select-none pointer-events-none">
+                          {userDateFormatted}
+                        </span>
+                      )}
                     </div>
                   );
                 }
@@ -756,6 +801,7 @@ export function ChatInterface({
                 // Assistant Message (no bubble, serif, no avatar)
                 const currentThumbs = thumbsState[message.id];
                 const { isSearching, queries, sources } = getWebSearchState(message);
+                const recalledTurns = getRecalledTurns(message);
                 const sourcesMap = new Map(sources.map((s) => [s.n, s]));
                 const processedText = linkifyCitations(text, sourcesMap);
 
@@ -768,6 +814,43 @@ export function ChatInterface({
                         <span>
                           Searching the web{queries.length > 0 ? `: ${queries.map((q) => `"${q}"`).join(', ')}` : '...'}
                         </span>
+                      </div>
+                    )}
+
+                    {/* From your history Card above answer */}
+                    {recalledTurns.length > 0 && (
+                      <div className="rounded-xl border border-[var(--border)] bg-[var(--hover)]/30 p-3 mb-3 text-xs font-sans text-[var(--text)] animate-popover">
+                        <div className="flex items-center gap-1.5 font-medium text-[var(--secondary)] mb-2 uppercase tracking-wider text-[11px] select-none">
+                          <Clock size={12} />
+                          <span>From your history ({recalledTurns.length})</span>
+                        </div>
+                        <div className="space-y-2">
+                          {recalledTurns.map((turn, tIdx) => (
+                            <div
+                              key={turn.id || tIdx}
+                              className="flex items-start justify-between gap-3 pt-2 border-t border-[var(--border)]/40 first:border-t-0 first:pt-0"
+                            >
+                              <div className="min-w-0 space-y-0.5">
+                                <div className="text-[11px] font-mono text-[var(--secondary)]">
+                                  {turn.dateFormatted}
+                                </div>
+                                <div className="text-[13px] text-[var(--text)] font-sans line-clamp-2">
+                                  {turn.question}
+                                </div>
+                              </div>
+                              {turn.conversationId && (
+                                <a
+                                  href={`/c/${turn.conversationId}`}
+                                  className="shrink-0 flex items-center gap-1 text-[11px] font-mono text-[var(--secondary)] hover:text-[var(--text)] transition-colors px-2 py-0.5 rounded border border-[var(--border)] bg-[var(--bg)] hover:bg-[var(--hover)]"
+                                  title={`Open "${turn.conversationTitle || 'conversation'}"`}
+                                >
+                                  <span>View</span>
+                                  <ExternalLink size={10} />
+                                </a>
+                              )}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
 
@@ -993,16 +1076,24 @@ export function ChatInterface({
               })}
 
               {/* Waiting for first token: pulsing AstorMark */}
-              {status === 'submitted' && !error && (
-                <div className="flex items-center gap-3 py-3">
-                  <div className="animate-pulse-subtle text-[var(--text)]">
-                    <AstorMark size={18} />
+              {(status === 'submitted' || status === 'streaming') && !error && messages.length > 0 && (() => {
+                const lastMsg = messages[messages.length - 1];
+                const statusMsg = getStatusMessage(lastMsg);
+                const lastMsgText = getMessageText(lastMsg);
+                if (lastMsg.role === 'assistant' && lastMsgText) {
+                  return null;
+                }
+                return (
+                  <div className="flex items-center gap-3 py-3">
+                    <div className="animate-pulse-subtle text-[var(--text)]">
+                      <AstorMark size={18} />
+                    </div>
+                    <span className="text-xs text-[var(--secondary)] font-sans">
+                      {statusMsg || 'Astor is thinking...'}
+                    </span>
                   </div>
-                  <span className="text-xs text-[var(--secondary)] font-sans">
-                    Astor is thinking...
-                  </span>
-                </div>
-              )}
+                );
+              })()}
 
               {/* One tidy inline error card in chat only */}
               {error && (
