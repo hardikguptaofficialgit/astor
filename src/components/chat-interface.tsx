@@ -33,12 +33,14 @@ import { Sidebar, ConversationItem } from './sidebar';
 
 interface ChatInterfaceProps {
   initialId?: string;
+  initialTitle?: string;
   initialMessages?: UIMessage[];
   isNewChat?: boolean;
 }
 
 export function ChatInterface({
   initialId,
+  initialTitle,
   initialMessages = [],
   isNewChat = false,
 }: ChatInterfaceProps) {
@@ -54,7 +56,7 @@ export function ChatInterface({
 
   // Optimistic conversation for immediate sidebar display
   const [optimisticConv, setOptimisticConv] = useState<ConversationItem | null>(null);
-  const [conversationTitle, setConversationTitle] = useState<string>('New chat');
+  const [conversationTitle, setConversationTitle] = useState<string>(() => initialTitle || 'New chat');
 
   // Thumbs feedback state
   const [thumbsState, setThumbsState] = useState<Record<string, 'up' | 'down' | null>>({});
@@ -76,8 +78,12 @@ export function ChatInterface({
   const titleMenuRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch initial title if existing conversation
+  // Fetch initial title if existing conversation and initialTitle wasn't provided
   useEffect(() => {
+    if (initialTitle) {
+      setConversationTitle(initialTitle);
+      return;
+    }
     if (initialId) {
       fetch(`/api/conversations/${initialId}`)
         .then((res) => (res.ok ? res.json() : null))
@@ -88,7 +94,7 @@ export function ChatInterface({
         })
         .catch(() => {});
     }
-  }, [initialId]);
+  }, [initialId, initialTitle]);
 
   // Transport configuration passing optional flags
   const transport = useMemo(
@@ -221,7 +227,7 @@ export function ChatInterface({
     // Generate optimistic title if first message
     if (!hasMessages) {
       const clean = textToSend.replace(/\s+/g, ' ').trim();
-      const generatedTitle = clean.length <= 40 ? clean || 'New Chat' : clean.slice(0, 40).trim() + '...';
+      const generatedTitle = clean.length <= 60 ? clean || 'New chat' : clean.slice(0, 60).trim();
       setConversationTitle(generatedTitle);
 
       const optimisticItem: ConversationItem = {
@@ -474,7 +480,7 @@ export function ChatInterface({
                 {/* Bottom row inside composer */}
                 <div className="flex items-center justify-between pt-2">
                   {/* Left: Plus button with popover */}
-                  <div className="relative" ref={plusMenuRef}>
+                  <div ref={plusMenuRef}>
                     <button
                       type="button"
                       onClick={() => setPlusMenuOpen((v) => !v)}
@@ -486,7 +492,7 @@ export function ChatInterface({
 
                     {/* Plus Menu Popover */}
                     {plusMenuOpen && (
-                      <div className="absolute left-0 bottom-full mb-2 w-48 rounded-[12px] border border-[var(--border)] bg-[var(--popover-bg)] shadow-xl p-1 text-xs animate-popover z-50">
+                      <div className="absolute left-3.5 bottom-[calc(100%+8px)] w-48 rounded-[12px] border border-[var(--border)] bg-[var(--popover-bg)] shadow-xl p-1 text-xs animate-popover z-50">
                         <button
                           type="button"
                           onClick={() => setWebSearchEnabled((v) => !v)}
@@ -554,6 +560,11 @@ export function ChatInterface({
                 );
               })}
             </div>
+
+            {/* Disclaimer */}
+            <p className="text-center text-[11px] text-[var(--secondary)] select-none pt-1">
+              Astor can make mistakes. Please double-check responses.
+            </p>
           </div>
         ) : (
           /* ==================== ACTIVE CONVERSATION VIEW ==================== */
@@ -748,7 +759,7 @@ export function ChatInterface({
               })}
 
               {/* Waiting for first token: pulsing AstorMark */}
-              {status === 'submitted' && (
+              {status === 'submitted' && !error && (
                 <div className="flex items-center gap-3 py-3">
                   <div className="animate-pulse-subtle text-[var(--text)]">
                     <AstorMark size={18} />
@@ -761,14 +772,24 @@ export function ChatInterface({
 
               {/* One tidy inline error card in chat only */}
               {error && (
-                <div className="flex items-start gap-3 p-3.5 rounded-xl border border-[var(--border)] bg-[var(--user-bubble)] text-xs text-[var(--text)] shadow-xs animate-popover">
-                  <AlertCircle size={16} className="text-[var(--secondary)] shrink-0 mt-0.5" />
-                  <div className="flex-1 space-y-1 font-sans">
-                    <p className="font-medium">Error communicating with Astor</p>
-                    <p className="text-[var(--secondary)] leading-relaxed">
-                      {error.message || 'An error occurred during response generation. Check META_API_KEY in .env.'}
-                    </p>
+                <div className="flex items-start justify-between gap-3 p-3.5 rounded-xl border border-[var(--border)] bg-[var(--user-bubble)] text-xs text-[var(--text)] shadow-xs animate-popover">
+                  <div className="flex items-start gap-3 min-w-0">
+                    <AlertCircle size={16} className="text-[var(--secondary)] shrink-0 mt-0.5" />
+                    <div className="space-y-1 font-sans">
+                      <p className="font-medium">Error communicating with Astor</p>
+                      <p className="text-[var(--secondary)] leading-relaxed">
+                        {error.message || 'An error occurred during response generation. Check META_API_KEY in .env.'}
+                      </p>
+                    </div>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => regenerate()}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-[var(--border)] bg-[var(--popover-bg)] hover:bg-[var(--hover)] text-xs font-medium text-[var(--text)] shrink-0 transition-colors"
+                  >
+                    <RotateCw size={13} />
+                    <span>Retry</span>
+                  </button>
                 </div>
               )}
 
@@ -808,7 +829,7 @@ export function ChatInterface({
                 {/* Bottom row inside chat composer */}
                 <div className="flex items-center justify-between pt-1">
                   {/* Left: Plus button with popover */}
-                  <div className="relative" ref={plusMenuRef}>
+                  <div ref={plusMenuRef}>
                     <button
                       type="button"
                       onClick={() => setPlusMenuOpen((v) => !v)}
@@ -820,7 +841,7 @@ export function ChatInterface({
 
                     {/* Plus Menu Popover */}
                     {plusMenuOpen && (
-                      <div className="absolute left-0 bottom-full mb-2 w-48 rounded-[12px] border border-[var(--border)] bg-[var(--popover-bg)] shadow-xl p-1 text-xs animate-popover z-50">
+                      <div className="absolute left-2.5 bottom-[calc(100%+8px)] w-48 rounded-[12px] border border-[var(--border)] bg-[var(--popover-bg)] shadow-xl p-1 text-xs animate-popover z-50">
                         <button
                           type="button"
                           onClick={() => setWebSearchEnabled((v) => !v)}
@@ -847,8 +868,11 @@ export function ChatInterface({
                     )}
                   </div>
 
-                  {/* Right: Send arrow or stop square */}
-                  <div className="flex items-center gap-2">
+                  {/* Right: Model label & Send arrow or stop square */}
+                  <div className="flex items-center gap-3">
+                    <span className="text-[12px] text-[var(--secondary)] select-none">
+                      Muse Spark
+                    </span>
                     {isStreaming ? (
                       <button
                         type="button"
@@ -874,8 +898,8 @@ export function ChatInterface({
               </div>
 
               {/* Disclaimer */}
-              <p className="text-center text-[11px] text-[var(--secondary)] mt-2">
-                Astor can make mistakes. Check important info.
+              <p className="text-center text-[11px] text-[var(--secondary)] mt-2 select-none">
+                Astor can make mistakes. Please double-check responses.
               </p>
             </div>
           </div>

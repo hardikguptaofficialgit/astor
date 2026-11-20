@@ -6,7 +6,6 @@ export function getSystemPrompt(): string {
   const now = new Date();
   const isoTime = now.toISOString();
   const formattedTime = now.toLocaleString('en-US', {
-    timeZoneName: 'short',
     dateStyle: 'full',
     timeStyle: 'long',
   });

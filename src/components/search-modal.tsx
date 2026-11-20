@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, X, MessageSquare, ArrowRight } from 'lucide-react';
-import { SearchResult } from '@/lib/db';
+import { SearchResult, Conversation } from '@/lib/db';
 
 interface SearchModalProps {
   isOpen: boolean;
@@ -14,18 +14,23 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [recents, setRecents] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsContainerRef = useRef<HTMLDivElement>(null);
 
-  // Focus input on open and reset state
+  // Focus input on open and reset state, fetch recents
   useEffect(() => {
     if (isOpen) {
       setQuery('');
       setResults([]);
       setSelectedIndex(0);
+      fetch('/api/conversations')
+        .then((res) => (res.ok ? res.json() : []))
+        .then((data) => setRecents(data))
+        .catch(() => setRecents([]));
       setTimeout(() => {
         inputRef.current?.focus();
       }, 50);
@@ -50,6 +55,7 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
     if (!trimmed) {
       setResults([]);
       setLoading(false);
+      setSelectedIndex(0);
       return;
     }
 
@@ -80,17 +86,19 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
     [router, onClose]
   );
 
+  const currentItems = query.trim() ? results : recents;
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setSelectedIndex((prev) => (results.length > 0 ? (prev + 1) % results.length : 0));
+      setSelectedIndex((prev) => (currentItems.length > 0 ? (prev + 1) % currentItems.length : 0));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setSelectedIndex((prev) => (results.length > 0 ? (prev - 1 + results.length) % results.length : 0));
+      setSelectedIndex((prev) => (currentItems.length > 0 ? (prev - 1 + currentItems.length) % currentItems.length : 0));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (results.length > 0 && results[selectedIndex]) {
-        handleSelect(results[selectedIndex].id);
+      if (currentItems.length > 0 && currentItems[selectedIndex]) {
+        handleSelect(currentItems[selectedIndex].id);
       }
     }
   };
@@ -183,9 +191,45 @@ export function SearchModal({ isOpen, onClose }: SearchModalProps) {
               No conversations found for &ldquo;{query}&rdquo;
             </div>
           ) : !query.trim() ? (
-            <div className="py-8 text-center text-xs text-[var(--secondary)]">
-              Type keywords from titles or message contents to search
-            </div>
+            recents.length === 0 ? (
+              <div className="py-8 text-center text-xs text-[var(--secondary)]">
+                No recent conversations
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <div className="px-3 py-1.5 text-[11px] font-medium text-[var(--secondary)] select-none">
+                  Recent conversations
+                </div>
+                {recents.map((item, idx) => {
+                  const isSelected = idx === selectedIndex;
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() => handleSelect(item.id)}
+                      onMouseEnter={() => setSelectedIndex(idx)}
+                      className={`flex items-start justify-between gap-3 p-3 rounded-xl cursor-pointer transition-colors ${
+                        isSelected
+                          ? 'bg-[var(--hover)] text-[var(--text)]'
+                          : 'hover:bg-[var(--hover)] text-[var(--text)]'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3 min-w-0 flex-1">
+                        <MessageSquare size={16} className="text-[var(--secondary)] shrink-0 mt-0.5" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[13.5px] font-medium truncate">{item.title}</p>
+                        </div>
+                      </div>
+                      <ArrowRight
+                        size={14}
+                        className={`shrink-0 mt-1 transition-opacity ${
+                          isSelected ? 'opacity-100 text-[var(--text)]' : 'opacity-0'
+                        }`}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )
           ) : (
             results.map((item, idx) => {
               const isSelected = idx === selectedIndex;

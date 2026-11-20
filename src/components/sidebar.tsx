@@ -293,9 +293,9 @@ export function Sidebar({
                 <Search size={15} />
                 <span className="text-[var(--text)]">Search</span>
               </div>
-              <span className="text-[10.5px] font-mono text-[var(--secondary)]">
+              <kbd className="px-1.5 py-0.5 rounded border border-[var(--border)] bg-[var(--popover-bg)] text-[11px] font-mono text-[var(--text)]/85 shadow-2xs font-medium">
                 Ctrl+K
-              </span>
+              </kbd>
             </button>
           </div>
 
@@ -433,8 +433,9 @@ export function Sidebar({
                 ref={accountMenuRef}
                 className="absolute left-2 right-2 bottom-full mb-2 p-1.5 rounded-[12px] border border-[var(--border)] bg-[var(--popover-bg)] shadow-xl text-xs space-y-1 animate-popover z-50"
               >
-                <div className="px-2.5 py-1 text-[11px] font-medium text-[var(--secondary)]">
-                  hardik
+                <div className="px-2.5 py-1 flex items-center justify-between">
+                  <span className="text-[11px] font-medium text-[var(--text)]">Hardik</span>
+                  <span className="text-[10px] text-[var(--secondary)]">Free plan</span>
                 </div>
                 <div className="h-px bg-[var(--border)] my-1" />
 
@@ -518,15 +519,20 @@ export function Sidebar({
               className="flex items-center justify-between w-full p-2 rounded-lg hover:bg-[var(--hover)] transition-colors text-left"
               aria-label="Account menu"
             >
-              <div className="flex items-center gap-2.5">
-                <div className="w-6 h-6 rounded-full bg-[var(--text)] text-[var(--bg)] font-sans text-xs font-medium flex items-center justify-center">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-7 h-7 rounded-full bg-[var(--text)] text-[var(--bg)] font-sans text-xs font-medium flex items-center justify-center shrink-0">
                   H
                 </div>
-                <span className="text-[13px] font-medium text-[var(--text)]">
-                  Hardik
-                </span>
+                <div className="flex flex-col text-left min-w-0 leading-tight">
+                  <span className="text-[13px] font-medium text-[var(--text)] truncate">
+                    Hardik
+                  </span>
+                  <span className="text-[11px] text-[var(--secondary)]">
+                    Free plan
+                  </span>
+                </div>
               </div>
-              <ChevronDown size={14} className="text-[var(--secondary)]" />
+              <ChevronDown size={14} className="text-[var(--secondary)] shrink-0" />
             </button>
           </div>
         </div>

@@ -27,6 +27,7 @@ export default async function ConversationPage({
     <ChatInterface
       key={id}
       initialId={id}
+      initialTitle={conversation.title}
       initialMessages={initialMessages}
       isNewChat={false}
     />

@@ -60,6 +60,10 @@ export async function POST(req: Request) {
 
     return result.toUIMessageStreamResponse();
   } catch (error: unknown) {
+    console.error('POST /api/chat error:', error);
+    if (error instanceof Error && error.stack) {
+      console.error(error.stack);
+    }
     const message = error instanceof Error ? error.message : 'Internal Server Error';
     return new Response(message, {
       status: 500,

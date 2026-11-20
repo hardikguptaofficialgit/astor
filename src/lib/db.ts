@@ -73,14 +73,15 @@ export function getDb(): DatabaseSync {
 }
 
 /**
- * Auto-title a conversation from the first user message, trimmed to ~40 chars.
+ * Auto-title a conversation from the first user message, stored up to ~60 chars with no ellipsis.
+ * CSS handles truncation/ellipsis at display time.
  */
 export function generateTitle(text: string): string {
   const clean = text.trim().replace(/\s+/g, ' ');
-  if (clean.length <= 40) {
-    return clean || 'New Chat';
+  if (clean.length <= 60) {
+    return clean || 'New chat';
   }
-  return clean.slice(0, 40).trim() + '...';
+  return clean.slice(0, 60).trim();
 }
 
 export function getAllConversations(): Conversation[] {
