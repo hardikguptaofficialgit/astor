@@ -25,16 +25,22 @@ export function computeCacheKey(query: string, params: CacheKeyParams = {}): str
   return crypto.createHash('sha256').update(rawKey).digest('hex');
 }
 
+function parseTTL(envVal: string | undefined, defaultValue: number): number {
+  if (!envVal) return defaultValue;
+  const parsed = parseInt(envVal, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
 /**
  * Determines TTL in seconds:
- * - news/finance or daily recency: 1 hour (3600 seconds)
- * - general topic: 24 hours (86400 seconds)
+ * - news/finance or daily recency: 1 hour (3600 seconds default, or ASTOR_SEARCH_CACHE_TTL_NEWS)
+ * - general topic: 24 hours (86400 seconds default, or ASTOR_SEARCH_CACHE_TTL_GENERAL)
  */
 export function getTTLSeconds(params: CacheKeyParams = {}): number {
   if (params.topic === 'news' || params.topic === 'finance' || params.time_range === 'day') {
-    return 3600;
+    return parseTTL(process.env.ASTOR_SEARCH_CACHE_TTL_NEWS, 3600);
   }
-  return 86400;
+  return parseTTL(process.env.ASTOR_SEARCH_CACHE_TTL_GENERAL, 86400);
 }
 
 /**

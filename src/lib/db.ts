@@ -80,6 +80,7 @@ export function getDb(): DatabaseSync {
   // WAL mode for write/read concurrency and foreign keys
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
+  db.exec('PRAGMA busy_timeout = 5000;');
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversations (
@@ -161,24 +162,90 @@ export function generateTitle(text: string): string {
   return clean.slice(0, 60).trim();
 }
 
+function toConversation(row: Record<string, unknown>): Conversation {
+  return {
+    id: row.id as string,
+    title: row.title as string,
+    created_at: row.created_at as string,
+    updated_at: row.updated_at as string,
+    summary: (row.summary as string | null) ?? null,
+    summary_upto_seq: (row.summary_upto_seq as number | null) ?? null,
+  };
+}
+
+function toSource(row: Record<string, unknown>): NumberedSource {
+  return {
+    n: row.n as number,
+    url: row.url as string,
+    title: row.title as string,
+    domain: row.domain as string,
+    snippet: (row.snippet as string | null) ?? null,
+    published_date: (row.published_date as string | null) ?? null,
+    retrieved_at: row.retrieved_at as number,
+    score: (row.score as number | null) ?? null,
+    favicon: (row.favicon as string | null) ?? null,
+  };
+}
+
+function toMessage(row: Record<string, unknown>, sources?: NumberedSource[]): Message {
+  return {
+    id: row.id as string,
+    conversation_id: row.conversation_id as string,
+    role: row.role as 'user' | 'assistant' | 'system',
+    content: row.content as string,
+    created_at: row.created_at as string,
+    parts_json: (row.parts_json as string | null) ?? null,
+    model_text: (row.model_text as string | null) ?? null,
+    seq: (row.seq as number | null) ?? null,
+    local_date: (row.local_date as string | null) ?? null,
+    mode: (row.mode as string | null) ?? null,
+    finish: (row.finish as string | null) ?? null,
+    tokens_in: (row.tokens_in as number | null) ?? null,
+    tokens_cached: (row.tokens_cached as number | null) ?? null,
+    tokens_out: (row.tokens_out as number | null) ?? null,
+    tokens_reasoning: (row.tokens_reasoning as number | null) ?? null,
+    tavily_credits: (row.tavily_credits as number | null) ?? null,
+    sources: sources && sources.length > 0 ? sources : undefined,
+  };
+}
+
+function toSearchResult(row: Record<string, unknown>): SearchResult {
+  return {
+    id: row.id as string,
+    title: row.title as string,
+    snippet: (row.snippet as string | null) ?? null,
+    updated_at: row.updated_at as string,
+  };
+}
+
+function toSearchCache(row: Record<string, unknown>): { results_json: string; fetched_at: number; ttl_s: number } {
+  return {
+    results_json: row.results_json as string,
+    fetched_at: row.fetched_at as number,
+    ttl_s: row.ttl_s as number,
+  };
+}
+
 export function getAllConversations(): Conversation[] {
   const db = getDb();
   const stmt = db.prepare('SELECT id, title, created_at, updated_at, summary, summary_upto_seq FROM conversations ORDER BY updated_at DESC');
-  return stmt.all() as unknown as Conversation[];
+  const rows = stmt.all() as Record<string, unknown>[];
+  return rows.map(toConversation);
 }
 
 export function getConversationById(id: string): ConversationWithMessages | null {
   const db = getDb();
   const convStmt = db.prepare('SELECT id, title, created_at, updated_at, summary, summary_upto_seq FROM conversations WHERE id = ?');
-  const conv = convStmt.get(id) as unknown as Conversation | undefined;
-  if (!conv) {
+  const rawConv = convStmt.get(id) as Record<string, unknown> | undefined;
+  if (!rawConv) {
     return null;
   }
+  const conv = toConversation(rawConv);
 
   const msgStmt = db.prepare(
     'SELECT id, conversation_id, role, content, created_at, parts_json, model_text, seq, local_date, mode, finish, tokens_in, tokens_cached, tokens_out, tokens_reasoning, tavily_credits FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'
   );
-  const rawMessages = msgStmt.all(id) as unknown as Message[];
+  const rawMessages = msgStmt.all(id) as Record<string, unknown>[];
 
   // Fetch sources for each message
   const sourcesStmt = db.prepare(
@@ -186,11 +253,9 @@ export function getConversationById(id: string): ConversationWithMessages | null
   );
 
   const messages: Message[] = rawMessages.map((m) => {
-    const sources = sourcesStmt.all(m.id) as unknown as NumberedSource[];
-    return {
-      ...m,
-      sources: sources && sources.length > 0 ? sources : undefined,
-    };
+    const rawSources = sourcesStmt.all(m.id as string) as Record<string, unknown>[];
+    const sources = rawSources.map(toSource);
+    return toMessage(m, sources.length > 0 ? sources : undefined);
   });
 
   return {
@@ -326,15 +391,16 @@ export function getSourcesByMessageId(messageId: string): NumberedSource[] {
   const stmt = db.prepare(
     'SELECT n, url, title, domain, snippet, published_date, retrieved_at, score, favicon FROM sources WHERE message_id = ? ORDER BY n ASC'
   );
-  return stmt.all(messageId) as unknown as NumberedSource[];
+  const rows = stmt.all(messageId) as Record<string, unknown>[];
+  return rows.map(toSource);
 }
 
 export function getSearchCache(key: string): { results_json: string; fetched_at: number; ttl_s: number } | null {
   const db = getDb();
   const stmt = db.prepare('SELECT results_json, fetched_at, ttl_s FROM search_cache WHERE key = ?');
-  const row = stmt.get(key) as { results_json: string; fetched_at: number; ttl_s: number } | undefined;
+  const row = stmt.get(key) as Record<string, unknown> | undefined;
   if (!row) return null;
-  return row;
+  return toSearchCache(row);
 }
 
 export function setSearchCache(
@@ -394,5 +460,6 @@ export function searchConversations(query: string): SearchResult[] {
     LIMIT 25
   `);
 
-  return stmt.all(searchPattern, searchPattern, searchPattern) as unknown as SearchResult[];
+  const rows = stmt.all(searchPattern, searchPattern, searchPattern) as Record<string, unknown>[];
+  return rows.map(toSearchResult);
 }
