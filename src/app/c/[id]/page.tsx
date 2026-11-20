@@ -17,11 +17,28 @@ export default async function ConversationPage({
     notFound();
   }
 
-  const initialMessages: UIMessage[] = conversation.messages.map((m) => ({
-    id: m.id,
-    role: m.role,
-    parts: [{ type: 'text', text: m.content }],
-  }));
+  const initialMessages: UIMessage[] = conversation.messages.map((m) => {
+    const parts: UIMessage['parts'] = [{ type: 'text', text: m.content }];
+
+    if (m.sources && m.sources.length > 0) {
+      parts.push({
+        type: 'dynamic-tool',
+        toolName: 'web_search',
+        toolCallId: `hist-call-${m.id}`,
+        state: 'output-available',
+        output: {
+          state: 'done',
+          results: m.sources,
+        },
+      } as unknown as UIMessage['parts'][number]);
+    }
+
+    return {
+      id: m.id,
+      role: m.role,
+      parts,
+    };
+  });
 
   return (
     <ChatInterface

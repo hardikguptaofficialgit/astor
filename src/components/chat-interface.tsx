@@ -26,10 +26,174 @@ import {
   Clock,
   Pencil,
   Trash2,
+  ExternalLink,
 } from 'lucide-react';
 import { AstorMark } from './astor-mark';
 import { CodeBlock } from './code-block';
 import { Sidebar, ConversationItem } from './sidebar';
+import { NumberedSource } from '@/lib/db';
+
+interface WebSearchToolState {
+  isSearching: boolean;
+  queries: string[];
+  sources: NumberedSource[];
+}
+
+function getWebSearchState(message: UIMessage): WebSearchToolState {
+  let isSearching = false;
+  let queries: string[] = [];
+  let sources: NumberedSource[] = [];
+
+  if (!message.parts || !Array.isArray(message.parts)) {
+    return { isSearching, queries, sources };
+  }
+
+  for (const part of message.parts) {
+    const p = part as Record<string, unknown>;
+    const isWebSearch =
+      p.type === 'tool-web_search' ||
+      p.toolName === 'web_search' ||
+      (p.type === 'dynamic-tool' && p.toolName === 'web_search');
+
+    if (isWebSearch) {
+      if (p.state === 'input-streaming' || p.state === 'input-available') {
+        isSearching = true;
+        const inputObj = p.input as { queries?: string[] } | undefined;
+        if (inputObj?.queries && Array.isArray(inputObj.queries)) {
+          queries = inputObj.queries;
+        }
+      } else if (p.state === 'output-available') {
+        const outputObj = p.output as
+          | { state?: string; queries?: string[]; results?: NumberedSource[] }
+          | undefined;
+        if (outputObj?.state === 'searching') {
+          isSearching = true;
+          if (outputObj.queries && Array.isArray(outputObj.queries)) {
+            queries = outputObj.queries;
+          }
+        } else if (outputObj?.state === 'done') {
+          isSearching = false;
+          if (outputObj.results && Array.isArray(outputObj.results)) {
+            sources = outputObj.results;
+          }
+          if (outputObj.queries && Array.isArray(outputObj.queries)) {
+            queries = outputObj.queries;
+          }
+        }
+      }
+    }
+  }
+
+  return { isSearching, queries, sources };
+}
+
+function formatDisplayDate(dateStr?: string | null): string {
+  if (!dateStr) return '';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+  } catch {
+    return dateStr;
+  }
+}
+
+function linkifyCitations(text: string, sourcesMap: Map<number, NumberedSource>): string {
+  if (!text || sourcesMap.size === 0) return text;
+  const segments = text.split(/(```[\s\S]*?```|`[^`\n]*`)/g);
+  return segments
+    .map((segment, i) => {
+      if (i % 2 === 1) return segment; // Inside code
+      return segment.replace(/\[(\d+)\]/g, (match, numStr) => {
+        const num = parseInt(numStr, 10);
+        if (sourcesMap.has(num)) {
+          return `[${num}](#source-${num})`;
+        }
+        return match;
+      });
+    })
+    .join('');
+}
+
+function CitationSuperscript({ source, n }: { source: NumberedSource; n: number }) {
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <span
+      className="relative inline-block align-super leading-none ml-0.5 select-none"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <a
+        href={source.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={`Source [${n}]: ${source.title}`}
+        className="inline-flex items-center justify-center min-w-[15px] h-[15px] px-1 text-[10px] font-mono font-medium rounded bg-[var(--hover)] hover:bg-[var(--text)] hover:text-[var(--bg)] text-[var(--secondary)] transition-colors no-underline cursor-pointer"
+      >
+        {n}
+      </a>
+
+      {hovered && (
+        <span
+          role="tooltip"
+          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-3 rounded-xl border border-[var(--border)] bg-[var(--popover-bg)] text-[var(--text)] shadow-xl z-50 text-left font-sans block animate-popover pointer-events-auto"
+        >
+          <span className="flex items-center gap-1.5 text-[11px] font-mono text-[var(--secondary)] mb-1">
+            {source.favicon ? (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                src={source.favicon}
+                alt=""
+                className="w-3.5 h-3.5 rounded-xs shrink-0"
+                onError={(e) => {
+                  (e.target as HTMLElement).style.display = 'none';
+                }}
+              />
+            ) : (
+              <Globe size={11} className="shrink-0" />
+            )}
+            <span className="truncate">{source.domain}</span>
+            {source.published_date && (
+              <>
+                <span className="opacity-50">•</span>
+                <span className="shrink-0 text-[10px]">
+                  {formatDisplayDate(source.published_date)}
+                </span>
+              </>
+            )}
+          </span>
+          <a
+            href={source.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block text-xs font-semibold text-[var(--text)] leading-snug line-clamp-2 hover:underline mb-1"
+          >
+            {source.title}
+          </a>
+          {source.snippet && (
+            <span className="block text-[11px] text-[var(--secondary)] leading-relaxed line-clamp-3 font-sans">
+              {source.snippet}
+            </span>
+          )}
+          <a
+            href={source.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 mt-2 text-[10px] text-[var(--secondary)] hover:text-[var(--text)] font-medium"
+          >
+            <span>Visit source</span>
+            <ExternalLink size={10} />
+          </a>
+        </span>
+      )}
+    </span>
+  );
+}
 
 interface ChatInterfaceProps {
   initialId?: string;
@@ -591,102 +755,172 @@ export function ChatInterface({
 
                 // Assistant Message (no bubble, serif, no avatar)
                 const currentThumbs = thumbsState[message.id];
+                const { isSearching, queries, sources } = getWebSearchState(message);
+                const sourcesMap = new Map(sources.map((s) => [s.n, s]));
+                const processedText = linkifyCitations(text, sourcesMap);
 
                 return (
                   <div key={message.id} className="group/msg w-full space-y-2 pt-1">
+                    {/* Small Searching Status Indicator */}
+                    {isSearching && (
+                      <div className="flex items-center gap-2 text-xs text-[var(--secondary)] py-1 font-sans animate-pulse-subtle select-none">
+                        <Globe size={13} className="text-[var(--secondary)] animate-spin shrink-0" />
+                        <span>
+                          Searching the web{queries.length > 0 ? `: ${queries.map((q) => `"${q}"`).join(', ')}` : '...'}
+                        </span>
+                      </div>
+                    )}
+
                     {/* Message Body (Serif 16.5px / 1.65, full markdown) */}
-                    <div className="assistant-prose">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          code({
-                            className,
-                            children,
-                            ...props
-                          }: React.ComponentProps<'code'> & { inline?: boolean }) {
-                            const match = /language-(\w+)/.exec(className || '');
-                            const codeString = String(children).replace(/\n$/, '');
-                            const isMultiLine = codeString.includes('\n');
-                            if (match || isMultiLine) {
+                    {processedText ? (
+                      <div className="assistant-prose">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            code({
+                              className,
+                              children,
+                              ...props
+                            }: React.ComponentProps<'code'> & { inline?: boolean }) {
+                              const match = /language-(\w+)/.exec(className || '');
+                              const codeString = String(children).replace(/\n$/, '');
+                              const isMultiLine = codeString.includes('\n');
+                              if (match || isMultiLine) {
+                                return (
+                                  <CodeBlock
+                                    language={match ? match[1] : 'text'}
+                                    code={codeString}
+                                  />
+                                );
+                              }
                               return (
-                                <CodeBlock
-                                  language={match ? match[1] : 'text'}
-                                  code={codeString}
-                                />
-                              );
-                            }
-                            return (
-                              <code
-                                className="px-1.5 py-0.5 rounded font-mono text-[13px] bg-[var(--hover)] text-[var(--text)] border border-[var(--border)]"
-                                {...props}
-                              >
-                                {children}
-                              </code>
-                            );
-                          },
-                          table({ children }) {
-                            return (
-                              <div className="overflow-x-auto my-4 border border-[var(--border)] rounded-lg">
-                                <table className="w-full text-left text-sm font-sans border-collapse">
+                                <code
+                                  className="px-1.5 py-0.5 rounded font-mono text-[13px] bg-[var(--hover)] text-[var(--text)] border border-[var(--border)]"
+                                  {...props}
+                                >
                                   {children}
-                                </table>
-                              </div>
-                            );
-                          },
-                          thead({ children }) {
-                            return (
-                              <thead className="bg-[var(--hover)]/60 border-b border-[var(--border)]">
-                                {children}
-                              </thead>
-                            );
-                          },
-                          th({ children }) {
-                            return (
-                              <th className="px-3.5 py-2.5 text-xs font-semibold text-[var(--secondary)]">
-                                {children}
-                              </th>
-                            );
-                          },
-                          td({ children }) {
-                            return (
-                              <td className="px-3.5 py-2.5 border-t border-[var(--border)] text-sm font-sans">
-                                {children}
-                              </td>
-                            );
-                          },
-                          a({ href, children }) {
-                            return (
-                              <a
-                                href={href}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="underline underline-offset-4 hover:opacity-80 transition-opacity"
-                              >
-                                {children}
-                              </a>
-                            );
-                          },
-                          ul({ children }) {
-                            return <ul className="list-disc pl-5 my-2 space-y-1">{children}</ul>;
-                          },
-                          ol({ children }) {
-                            return <ol className="list-decimal pl-5 my-2 space-y-1">{children}</ol>;
-                          },
-                          li({ children }) {
-                            return <li className="pl-1">{children}</li>;
-                          },
-                          blockquote({ children }) {
-                            return (
-                              <blockquote className="border-l-2 border-[var(--secondary)] pl-4 italic my-3 text-[var(--secondary)]">
-                                {children}
-                              </blockquote>
-                            );
-                          },
-                        }}
-                      >
-                        {text}
-                      </ReactMarkdown>
-                    </div>
+                                </code>
+                              );
+                            },
+                            table({ children }) {
+                              return (
+                                <div className="overflow-x-auto my-4 border border-[var(--border)] rounded-lg">
+                                  <table className="w-full text-left text-sm font-sans border-collapse">
+                                    {children}
+                                  </table>
+                                </div>
+                              );
+                            },
+                            thead({ children }) {
+                              return (
+                                <thead className="bg-[var(--hover)]/60 border-b border-[var(--border)]">
+                                  {children}
+                                </thead>
+                              );
+                            },
+                            th({ children }) {
+                              return (
+                                <th className="px-3.5 py-2.5 text-xs font-semibold text-[var(--secondary)]">
+                                  {children}
+                                </th>
+                              );
+                            },
+                            td({ children }) {
+                              return (
+                                <td className="px-3.5 py-2.5 border-t border-[var(--border)] text-sm font-sans">
+                                  {children}
+                                </td>
+                              );
+                            },
+                            a({ href, children, ...props }) {
+                              if (href && href.startsWith('#source-')) {
+                                const num = parseInt(href.replace('#source-', ''), 10);
+                                const source = sourcesMap.get(num);
+                                if (source) {
+                                  return <CitationSuperscript source={source} n={num} />;
+                                }
+                              }
+                              return (
+                                <a
+                                  href={href}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="underline underline-offset-4 hover:opacity-80 transition-opacity"
+                                  {...props}
+                                >
+                                  {children}
+                                </a>
+                              );
+                            },
+                            ul({ children }) {
+                              return <ul className="list-disc pl-5 my-2 space-y-1">{children}</ul>;
+                            },
+                            ol({ children }) {
+                              return <ol className="list-decimal pl-5 my-2 space-y-1">{children}</ol>;
+                            },
+                            li({ children }) {
+                              return <li className="pl-1">{children}</li>;
+                            },
+                            blockquote({ children }) {
+                              return (
+                                <blockquote className="border-l-2 border-[var(--secondary)] pl-4 italic my-3 text-[var(--secondary)]">
+                                  {children}
+                                </blockquote>
+                              );
+                            },
+                          }}
+                        >
+                          {processedText}
+                        </ReactMarkdown>
+                      </div>
+                    ) : null}
+
+                    {/* Source Chips Under Answer */}
+                    {sources.length > 0 && (
+                      <div className="pt-3 pb-1 border-t border-[var(--border)]/40 mt-3">
+                        <div className="text-[11px] font-medium text-[var(--secondary)] mb-2 uppercase tracking-wider font-sans select-none flex items-center gap-1.5">
+                          <Globe size={12} />
+                          <span>Sources ({sources.length})</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {sources.map((s) => (
+                            <a
+                              key={s.n}
+                              href={s.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-1.5 max-w-[240px] px-2.5 py-1 rounded-lg border border-[var(--border)] bg-[var(--hover)]/30 hover:bg-[var(--hover)] text-xs text-[var(--text)] transition-colors group/chip"
+                              title={`${s.title} — ${s.domain}`}
+                            >
+                              <span className="text-[10px] font-mono text-[var(--secondary)] font-semibold shrink-0">
+                                [{s.n}]
+                              </span>
+                              {s.favicon ? (
+                                /* eslint-disable-next-line @next/next/no-img-element */
+                                <img
+                                  src={s.favicon}
+                                  alt=""
+                                  className="w-3.5 h-3.5 rounded-xs shrink-0"
+                                  onError={(e) => {
+                                    (e.target as HTMLElement).style.display = 'none';
+                                  }}
+                                />
+                              ) : (
+                                <Globe size={11} className="text-[var(--secondary)] shrink-0" />
+                              )}
+                              <span className="truncate font-sans font-medium text-[12px]">
+                                {s.title || s.domain}
+                              </span>
+                              {s.published_date && (
+                                <span className="text-[10px] text-[var(--secondary)] opacity-75 shrink-0 font-mono hidden sm:inline">
+                                  {formatDisplayDate(s.published_date)}
+                                </span>
+                              )}
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Action Bar Under Assistant Reply: Copy, Thumbs up, Thumbs down, Retry, relative time */}
                     <div

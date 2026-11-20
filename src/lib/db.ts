@@ -7,6 +7,20 @@ export interface Conversation {
   title: string;
   created_at: string;
   updated_at: string;
+  summary?: string | null;
+  summary_upto_seq?: number | null;
+}
+
+export interface NumberedSource {
+  n: number;
+  url: string;
+  title: string;
+  domain: string;
+  snippet?: string | null;
+  published_date?: string | null;
+  retrieved_at: number;
+  score?: number | null;
+  favicon?: string | null;
 }
 
 export interface Message {
@@ -15,6 +29,18 @@ export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   created_at: string;
+  parts_json?: string | null;
+  model_text?: string | null;
+  seq?: number | null;
+  local_date?: string | null;
+  mode?: string | null;
+  finish?: string | null;
+  tokens_in?: number | null;
+  tokens_cached?: number | null;
+  tokens_out?: number | null;
+  tokens_reasoning?: number | null;
+  tavily_credits?: number | null;
+  sources?: NumberedSource[];
 }
 
 export interface ConversationWithMessages extends Conversation {
@@ -29,6 +55,14 @@ export interface SearchResult {
 }
 
 let dbInstance: DatabaseSync | null = null;
+
+function safeAddColumn(db: DatabaseSync, table: string, colDef: string) {
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+  } catch {
+    // Column already exists or table doesn't support it
+  }
+}
 
 export function getDb(): DatabaseSync {
   if (dbInstance) {
@@ -66,16 +100,59 @@ export function getDb(): DatabaseSync {
 
     CREATE INDEX IF NOT EXISTS idx_messages_conv_id ON messages(conversation_id);
     CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS sources (
+      message_id TEXT NOT NULL,
+      n INTEGER NOT NULL,
+      url TEXT NOT NULL,
+      title TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      snippet TEXT,
+      published_date TEXT,
+      retrieved_at INTEGER NOT NULL,
+      score REAL,
+      favicon TEXT,
+      PRIMARY KEY (message_id, n),
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_sources_message ON sources(message_id);
+
+    CREATE TABLE IF NOT EXISTS search_cache (
+      key TEXT PRIMARY KEY,
+      query TEXT NOT NULL,
+      params_json TEXT,
+      results_json TEXT NOT NULL,
+      fetched_at INTEGER NOT NULL,
+      ttl_s INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_search_cache_fetched ON search_cache(fetched_at);
   `);
+
+  // Migrate additional columns safely
+  safeAddColumn(db, 'conversations', 'summary TEXT');
+  safeAddColumn(db, 'conversations', 'summary_upto_seq INTEGER');
+
+  safeAddColumn(db, 'messages', 'parts_json TEXT');
+  safeAddColumn(db, 'messages', 'model_text TEXT');
+  safeAddColumn(db, 'messages', 'seq INTEGER');
+  safeAddColumn(db, 'messages', 'local_date TEXT');
+  safeAddColumn(db, 'messages', 'mode TEXT');
+  safeAddColumn(db, 'messages', 'finish TEXT');
+  safeAddColumn(db, 'messages', 'tokens_in INTEGER');
+  safeAddColumn(db, 'messages', 'tokens_cached INTEGER');
+  safeAddColumn(db, 'messages', 'tokens_out INTEGER');
+  safeAddColumn(db, 'messages', 'tokens_reasoning INTEGER');
+  safeAddColumn(db, 'messages', 'tavily_credits INTEGER');
+
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_messages_local_date ON messages(local_date);');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conversation_id, seq);');
+  } catch {}
 
   dbInstance = db;
   return db;
 }
 
-/**
- * Auto-title a conversation from the first user message, stored up to ~60 chars with no ellipsis.
- * CSS handles truncation/ellipsis at display time.
- */
 export function generateTitle(text: string): string {
   const clean = text.trim().replace(/\s+/g, ' ');
   if (clean.length <= 60) {
@@ -86,20 +163,35 @@ export function generateTitle(text: string): string {
 
 export function getAllConversations(): Conversation[] {
   const db = getDb();
-  const stmt = db.prepare('SELECT id, title, created_at, updated_at FROM conversations ORDER BY updated_at DESC');
+  const stmt = db.prepare('SELECT id, title, created_at, updated_at, summary, summary_upto_seq FROM conversations ORDER BY updated_at DESC');
   return stmt.all() as unknown as Conversation[];
 }
 
 export function getConversationById(id: string): ConversationWithMessages | null {
   const db = getDb();
-  const convStmt = db.prepare('SELECT id, title, created_at, updated_at FROM conversations WHERE id = ?');
+  const convStmt = db.prepare('SELECT id, title, created_at, updated_at, summary, summary_upto_seq FROM conversations WHERE id = ?');
   const conv = convStmt.get(id) as unknown as Conversation | undefined;
   if (!conv) {
     return null;
   }
 
-  const msgStmt = db.prepare('SELECT id, conversation_id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC');
-  const messages = msgStmt.all(id) as unknown as Message[];
+  const msgStmt = db.prepare(
+    'SELECT id, conversation_id, role, content, created_at, parts_json, model_text, seq, local_date, mode, finish, tokens_in, tokens_cached, tokens_out, tokens_reasoning, tavily_credits FROM messages WHERE conversation_id = ? ORDER BY created_at ASC'
+  );
+  const rawMessages = msgStmt.all(id) as unknown as Message[];
+
+  // Fetch sources for each message
+  const sourcesStmt = db.prepare(
+    'SELECT n, url, title, domain, snippet, published_date, retrieved_at, score, favicon FROM sources WHERE message_id = ? ORDER BY n ASC'
+  );
+
+  const messages: Message[] = rawMessages.map((m) => {
+    const sources = sourcesStmt.all(m.id) as unknown as NumberedSource[];
+    return {
+      ...m,
+      sources: sources && sources.length > 0 ? sources : undefined,
+    };
+  });
 
   return {
     ...conv,
@@ -115,12 +207,32 @@ export function createConversation(id: string, title: string, createdAt?: string
   return { id, title, created_at: now, updated_at: now };
 }
 
+export function getNextMessageSeq(conversationId: string): number {
+  const db = getDb();
+  const stmt = db.prepare('SELECT MAX(seq) as maxSeq FROM messages WHERE conversation_id = ?');
+  const row = stmt.get(conversationId) as { maxSeq: number | null } | undefined;
+  return (row?.maxSeq ?? -1) + 1;
+}
+
 export function saveMessage(
   id: string,
   conversationId: string,
   role: 'user' | 'assistant' | 'system',
   content: string,
-  createdAt?: string
+  createdAt?: string,
+  extra?: {
+    parts_json?: string;
+    model_text?: string;
+    seq?: number;
+    local_date?: string;
+    mode?: string;
+    finish?: string;
+    tokens_in?: number;
+    tokens_cached?: number;
+    tokens_out?: number;
+    tokens_reasoning?: number;
+    tavily_credits?: number;
+  }
 ): Message {
   const db = getDb();
   const now = createdAt || new Date().toISOString();
@@ -135,11 +247,34 @@ export function saveMessage(
     updateStmt.run(now, conversationId);
   }
 
-  // Insert or replace message
-  const msgStmt = db.prepare(
-    'INSERT OR REPLACE INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)'
+  const seq = extra?.seq !== undefined ? extra.seq : getNextMessageSeq(conversationId);
+
+  const msgStmt = db.prepare(`
+    INSERT OR REPLACE INTO messages (
+      id, conversation_id, role, content, created_at,
+      parts_json, model_text, seq, local_date, mode, finish,
+      tokens_in, tokens_cached, tokens_out, tokens_reasoning, tavily_credits
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  msgStmt.run(
+    id,
+    conversationId,
+    role,
+    content,
+    now,
+    extra?.parts_json ?? null,
+    extra?.model_text ?? null,
+    seq,
+    extra?.local_date ?? null,
+    extra?.mode ?? null,
+    extra?.finish ?? null,
+    extra?.tokens_in ?? null,
+    extra?.tokens_cached ?? null,
+    extra?.tokens_out ?? null,
+    extra?.tokens_reasoning ?? null,
+    extra?.tavily_credits ?? null
   );
-  msgStmt.run(id, conversationId, role, content, now);
 
   return {
     id,
@@ -147,7 +282,75 @@ export function saveMessage(
     role,
     content,
     created_at: now,
+    seq,
+    parts_json: extra?.parts_json,
+    model_text: extra?.model_text,
+    local_date: extra?.local_date,
+    mode: extra?.mode,
+    finish: extra?.finish,
+    tokens_in: extra?.tokens_in,
+    tokens_cached: extra?.tokens_cached,
+    tokens_out: extra?.tokens_out,
+    tokens_reasoning: extra?.tokens_reasoning,
+    tavily_credits: extra?.tavily_credits,
   };
+}
+
+export function saveSources(messageId: string, sources: NumberedSource[]): void {
+  if (!sources || sources.length === 0) return;
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO sources (
+      message_id, n, url, title, domain, snippet, published_date, retrieved_at, score, favicon
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const s of sources) {
+    stmt.run(
+      messageId,
+      s.n,
+      s.url,
+      s.title,
+      s.domain,
+      s.snippet ?? null,
+      s.published_date ?? null,
+      s.retrieved_at,
+      s.score ?? null,
+      s.favicon ?? null
+    );
+  }
+}
+
+export function getSourcesByMessageId(messageId: string): NumberedSource[] {
+  const db = getDb();
+  const stmt = db.prepare(
+    'SELECT n, url, title, domain, snippet, published_date, retrieved_at, score, favicon FROM sources WHERE message_id = ? ORDER BY n ASC'
+  );
+  return stmt.all(messageId) as unknown as NumberedSource[];
+}
+
+export function getSearchCache(key: string): { results_json: string; fetched_at: number; ttl_s: number } | null {
+  const db = getDb();
+  const stmt = db.prepare('SELECT results_json, fetched_at, ttl_s FROM search_cache WHERE key = ?');
+  const row = stmt.get(key) as { results_json: string; fetched_at: number; ttl_s: number } | undefined;
+  if (!row) return null;
+  return row;
+}
+
+export function setSearchCache(
+  key: string,
+  query: string,
+  paramsJson: string,
+  resultsJson: string,
+  ttlS: number
+): void {
+  const db = getDb();
+  const now = Date.now();
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO search_cache (key, query, params_json, results_json, fetched_at, ttl_s)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  stmt.run(key, query, paramsJson, resultsJson, now, ttlS);
 }
 
 export function renameConversation(id: string, title: string): boolean {
@@ -165,9 +368,6 @@ export function deleteConversation(id: string): boolean {
   return true;
 }
 
-/**
- * Search conversation titles and message content using SQLite LIKE.
- */
 export function searchConversations(query: string): SearchResult[] {
   const clean = query.trim();
   if (!clean) return [];

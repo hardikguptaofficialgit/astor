@@ -1,7 +1,6 @@
-import { streamText, convertToModelMessages, UIMessage } from 'ai';
-import { getModelProvider, isApiKeyConfigured } from '@/lib/model';
-import { getSystemPrompt } from '@/lib/prompt';
-import { saveMessage } from '@/lib/db';
+import { isApiKeyConfigured } from '@/lib/llm/provider';
+import { runTurn } from '@/lib/agent/run-turn';
+import { UIMessage } from 'ai';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -27,38 +26,15 @@ export async function POST(req: Request) {
 
     const conversationId = id || crypto.randomUUID();
 
-    // Extract and persist the latest user message
-    const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user');
-    if (lastUserMessage) {
-      let userText = '';
-      if (lastUserMessage.parts && Array.isArray(lastUserMessage.parts)) {
-        userText = lastUserMessage.parts
-          .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-          .map((p) => p.text)
-          .join('');
-      } else if (typeof (lastUserMessage as unknown as { content?: string }).content === 'string') {
-        userText = (lastUserMessage as unknown as { content: string }).content;
-      }
-
-      const msgId = lastUserMessage.id || crypto.randomUUID();
-      saveMessage(msgId, conversationId, 'user', userText, new Date().toISOString());
-    }
-
-    // Convert messages for the model
-    const modelMessages = await convertToModelMessages(messages);
-
-    const result = streamText({
-      model: getModelProvider(),
-      system: getSystemPrompt(),
-      messages: modelMessages,
-      onFinish: async ({ text }) => {
-        if (text && text.trim().length > 0) {
-          saveMessage(crypto.randomUUID(), conversationId, 'assistant', text, new Date().toISOString());
-        }
-      },
+    const result = await runTurn({
+      conversationId,
+      messages,
+      signal: req.signal,
     });
 
-    return result.toUIMessageStreamResponse();
+    return result.toUIMessageStreamResponse({
+      sendReasoning: true,
+    });
   } catch (error: unknown) {
     console.error('POST /api/chat error:', error);
     if (error instanceof Error && error.stack) {

@@ -9,7 +9,8 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "npx tsx --test src/tests/citations.test.ts src/tests/cache.test.ts src/tests/tool.test.ts src/tests/pipeline.test.ts src/tests/agent.test.ts"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.93",
