@@ -12,6 +12,7 @@ const inter = Inter({
 const newsreader = Newsreader({
   variable: '--font-serif',
   subsets: ['latin'],
+  weight: ['400', '500'],
   style: ['normal', 'italic'],
   display: 'swap',
 });
@@ -19,6 +20,9 @@ const newsreader = Newsreader({
 export const metadata: Metadata = {
   title: 'Astor',
   description: 'A thoughtful, elegant AI chat assistant.',
+  icons: {
+    icon: '/icon.svg',
+  },
 };
 
 export default function RootLayout({
@@ -34,9 +38,13 @@ export default function RootLayout({
             __html: `
               (function() {
                 try {
-                  var theme = localStorage.getItem('astor_theme');
+                  var params = new URLSearchParams(window.location.search);
+                  var paramTheme = params.get('theme');
+                  var theme = paramTheme || localStorage.getItem('astor_theme');
                   var supportDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-                  if (theme === 'dark' || (!theme && supportDark)) {
+                  if (theme === 'light') {
+                    document.documentElement.classList.remove('dark');
+                  } else if (theme === 'dark' || (!theme && supportDark)) {
                     document.documentElement.classList.add('dark');
                   } else {
                     document.documentElement.classList.remove('dark');
@@ -47,7 +55,7 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className="min-h-screen bg-[var(--bg)] text-[var(--text)] antialiased">
+      <body className="min-h-screen bg-[var(--bg)] text-[var(--text)] antialiased selection:bg-[var(--hover)]">
         <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>

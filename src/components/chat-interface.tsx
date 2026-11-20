@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport, UIMessage } from 'ai';
 import ReactMarkdown from 'react-markdown';
@@ -11,13 +12,24 @@ import {
   Copy,
   Check,
   RotateCw,
+  ThumbsUp,
+  ThumbsDown,
   ChevronDown,
   AlertCircle,
-  Menu,
+  PanelLeft,
+  Plus,
+  Globe,
+  Brain,
+  Sparkles,
+  Code2,
+  Compass,
+  Clock,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
-import { AstorIcon } from './astor-icon';
+import { AstorMark } from './astor-mark';
 import { CodeBlock } from './code-block';
-import { Sidebar } from './sidebar';
+import { Sidebar, ConversationItem } from './sidebar';
 
 interface ChatInterfaceProps {
   initialId?: string;
@@ -30,39 +42,66 @@ export function ChatInterface({
   initialMessages = [],
   isNewChat = false,
 }: ChatInterfaceProps) {
+  const router = useRouter();
+
   // Stable conversation ID
   const [conversationId] = useState(() => initialId || crypto.randomUUID());
   const [input, setInput] = useState('');
-  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [userScrolledUp, setUserScrolledUp] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // Optimistic conversation for immediate sidebar display
+  const [optimisticConv, setOptimisticConv] = useState<ConversationItem | null>(null);
+  const [conversationTitle, setConversationTitle] = useState<string>('New chat');
+
+  // Thumbs feedback state
+  const [thumbsState, setThumbsState] = useState<Record<string, 'up' | 'down' | null>>({});
+
+  // Plus menu popover state
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(true);
+  const [memoryEnabled, setMemoryEnabled] = useState(true);
+
+  // Conversation title dropdown state (in top bar)
+  const [titleMenuOpen, setTitleMenuOpen] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
+  const titleMenuRef = useRef<HTMLDivElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
-  // Check if API key is configured
+  // Fetch initial title if existing conversation
   useEffect(() => {
-    fetch('/api/config')
-      .then((res) => res.json())
-      .then((data) => {
-        setHasApiKey(data.hasApiKey);
-      })
-      .catch(() => {
-        setHasApiKey(true);
-      });
-  }, []);
+    if (initialId) {
+      fetch(`/api/conversations/${initialId}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.title) {
+            setConversationTitle(data.title);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [initialId]);
 
-  // Transport configuration
+  // Transport configuration passing optional flags
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: '/api/chat',
-        body: { id: conversationId },
+        body: {
+          id: conversationId,
+          webSearch: webSearchEnabled,
+          memory: memoryEnabled,
+        },
       }),
-    [conversationId]
+    [conversationId, webSearchEnabled, memoryEnabled]
   );
 
   // useChat integration
@@ -80,6 +119,17 @@ export function ChatInterface({
   });
 
   const isStreaming = status === 'streaming' || status === 'submitted';
+  const hasMessages = messages.length > 0;
+
+  // Refetch conversations when streaming finishes to keep sidebar strictly synced with DB
+  const prevStreamingRef = useRef(isStreaming);
+  useEffect(() => {
+    if (prevStreamingRef.current && !isStreaming) {
+      setRefreshKey((k) => k + 1);
+      window.dispatchEvent(new CustomEvent('astor:conversation-updated'));
+    }
+    prevStreamingRef.current = isStreaming;
+  }, [isStreaming]);
 
   // Helper to extract text from a UIMessage
   const getMessageText = useCallback((msg: UIMessage): string => {
@@ -98,10 +148,11 @@ export function ChatInterface({
   // Time greeting based on current local hour
   const greeting = useMemo(() => {
     const hour = new Date().getHours();
-    if (hour >= 5 && hour < 12) return 'Good morning';
-    if (hour >= 12 && hour < 17) return 'Good afternoon';
-    if (hour >= 17 && hour < 22) return 'Good evening';
-    return 'Good night';
+    // Occasionally "What's on your mind?" if late night or randomly
+    if (hour >= 22 || hour < 5) return "What's on your mind?";
+    if (hour >= 5 && hour < 12) return 'Good morning, Hardik';
+    if (hour >= 12 && hour < 17) return 'Good afternoon, Hardik';
+    return 'Evening, Hardik';
   }, []);
 
   // Auto-scroll handler
@@ -117,7 +168,6 @@ export function ChatInterface({
     setUserScrolledUp(false);
   };
 
-  // Scroll to bottom when new streaming tokens arrive unless user scrolled up
   useEffect(() => {
     if (!userScrolledUp) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -133,7 +183,32 @@ export function ChatInterface({
     }
   }, [input]);
 
-  // Send message
+  // Close menus on outside click or Esc
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) {
+        setPlusMenuOpen(false);
+      }
+      if (titleMenuRef.current && !titleMenuRef.current.contains(e.target as Node)) {
+        setTitleMenuOpen(false);
+      }
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setPlusMenuOpen(false);
+        setTitleMenuOpen(false);
+        setIsRenaming(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, []);
+
+  // Send message with instant optimistic insert
   const handleSend = async (overridePrompt?: string) => {
     const textToSend = (overridePrompt ?? input).trim();
     if (!textToSend || isStreaming) return;
@@ -143,15 +218,35 @@ export function ChatInterface({
       textareaRef.current.style.height = 'auto';
     }
 
-    if (isNewChat && window.location.pathname === '/') {
-      window.history.replaceState(null, '', `/c/${conversationId}`);
+    // Generate optimistic title if first message
+    if (!hasMessages) {
+      const clean = textToSend.replace(/\s+/g, ' ').trim();
+      const generatedTitle = clean.length <= 40 ? clean || 'New Chat' : clean.slice(0, 40).trim() + '...';
+      setConversationTitle(generatedTitle);
+
+      const optimisticItem: ConversationItem = {
+        id: conversationId,
+        title: generatedTitle,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      setOptimisticConv(optimisticItem);
+
+      // Dispatch event so any listener updates immediately
+      window.dispatchEvent(
+        new CustomEvent('astor:conversation-updated', { detail: optimisticItem })
+      );
+
+      // Update URL to /c/[id] without full page refresh
+      if (isNewChat && window.location.pathname === '/') {
+        window.history.replaceState(null, '', `/c/${conversationId}`);
+      }
     }
 
     try {
       await sendMessage({ text: textToSend });
-      setRefreshKey((k) => k + 1);
     } catch {
-      // Handled via useChat error
+      // Error handled via useChat error state
     }
   };
 
@@ -170,149 +265,326 @@ export function ChatInterface({
     } catch {}
   };
 
-  const suggestionChips = [
-    "What's new in AI this week?",
-    "Compare Postgres hosting prices",
-    "Summarise today's tech news",
-    "What did I ask you yesterday?",
-  ];
+  const handleToggleThumbs = (msgId: string, type: 'up' | 'down') => {
+    setThumbsState((prev) => ({
+      ...prev,
+      [msgId]: prev[msgId] === type ? null : type,
+    }));
+  };
 
-  const hasMessages = messages.length > 0;
+  // Rename conversation from top bar
+  const handleStartRename = () => {
+    setTitleMenuOpen(false);
+    setIsRenaming(true);
+    setRenameValue(conversationTitle);
+    setTimeout(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }, 50);
+  };
+
+  const handleSaveRename = async () => {
+    const trimmed = renameValue.trim();
+    if (!trimmed) {
+      setIsRenaming(false);
+      return;
+    }
+    setConversationTitle(trimmed);
+    setIsRenaming(false);
+
+    try {
+      await fetch(`/api/conversations/${conversationId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: trimmed }),
+      });
+      window.dispatchEvent(new CustomEvent('astor:conversation-updated'));
+    } catch {}
+  };
+
+  // Delete conversation from top bar
+  const handleDeleteConversation = async () => {
+    setTitleMenuOpen(false);
+    try {
+      await fetch(`/api/conversations/${conversationId}`, { method: 'DELETE' });
+      window.dispatchEvent(new CustomEvent('astor:conversation-updated'));
+      router.push('/');
+    } catch {}
+  };
+
+  // Helper for relative time formatting
+  const formatRelativeTime = (timestamp?: string) => {
+    if (!timestamp) return 'Just now';
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffSec = Math.floor((now.getTime() - date.getTime()) / 1000);
+    if (diffSec < 60) return 'Just now';
+    const diffMin = Math.floor(diffSec / 60);
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const diffHours = Math.floor(diffMin / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  };
+
+  const suggestionChips = [
+    { label: "What's new in AI this week?", icon: Sparkles },
+    { label: 'Compare Postgres hosting prices', icon: Code2 },
+    { label: "Summarise today's tech news", icon: Compass },
+    { label: 'What did I ask you yesterday?', icon: Clock },
+  ];
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[var(--bg)] text-[var(--text)]">
-      {/* Sidebar */}
+      {/* Sidebar: ~288px, slide ease 200ms */}
       <Sidebar
         currentId={hasMessages ? conversationId : undefined}
         isOpen={sidebarOpen}
         onToggle={() => setSidebarOpen((v) => !v)}
         refreshKey={refreshKey}
+        optimisticConversation={optimisticConv}
       />
 
-      {/* Main Chat Area */}
-      <main className="flex-1 flex flex-col h-full relative overflow-hidden">
-        {/* Mobile Header Bar */}
-        <div className="md:hidden flex items-center justify-between p-3 border-b border-[var(--border-subtle)] bg-[var(--bg)]">
-          <button
-            type="button"
-            onClick={() => setSidebarOpen(true)}
-            aria-label="Open sidebar"
-            className="p-1.5 rounded-md text-[var(--muted)] hover:text-[var(--text)] transition-colors"
-          >
-            <Menu size={20} />
-          </button>
-          <div className="flex items-center gap-2">
-            <AstorIcon size={16} />
-            <span className="font-serif font-semibold text-sm">Astor</span>
-          </div>
-          <div className="w-8" />
-        </div>
+      {/* Main Column */}
+      <main className="flex-1 flex flex-col h-full relative overflow-hidden bg-[var(--bg)]">
+        {/* Top Bar (Active chat only) or Floating toggle on Home */}
+        {hasMessages ? (
+          <div className="h-[48px] flex items-center justify-between px-4 border-b border-[var(--border)] shrink-0 z-20 bg-[var(--bg)]">
+            <div className="flex items-center gap-2 min-w-0">
+              {/* Sidebar toggle button (visible when sidebar is closed) */}
+              {!sidebarOpen && (
+                <button
+                  type="button"
+                  onClick={() => setSidebarOpen(true)}
+                  aria-label="Expand sidebar"
+                  className="p-1.5 rounded-lg text-[var(--secondary)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors shrink-0"
+                >
+                  <PanelLeft size={18} />
+                </button>
+              )}
 
-        {/* Missing API Key Inline Alert */}
-        {hasApiKey === false && (
-          <div className="mx-auto mt-4 max-w-[720px] w-full px-4">
-            <div className="flex items-start gap-3 p-3.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-xs text-[var(--text)] shadow-xs">
-              <AlertCircle size={16} className="text-[var(--muted)] shrink-0 mt-0.5" />
-              <div className="flex-1 space-y-1">
-                <p className="font-medium">META_API_KEY is not configured</p>
-                <p className="text-[var(--muted)] leading-relaxed">
-                  To enable streaming chat replies, copy <code className="px-1 py-0.5 rounded bg-[var(--surface-active)] font-mono">.env.example</code> to <code className="px-1 py-0.5 rounded bg-[var(--surface-active)] font-mono">.env</code> and set your <code className="px-1 py-0.5 rounded bg-[var(--surface-active)] font-mono">META_API_KEY</code>.
-                </p>
-              </div>
+              {/* Title with chevron menu */}
+              {isRenaming ? (
+                <div className="flex items-center gap-1">
+                  <input
+                    ref={renameInputRef}
+                    type="text"
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSaveRename();
+                      if (e.key === 'Escape') setIsRenaming(false);
+                    }}
+                    onBlur={handleSaveRename}
+                    className="text-[14px] font-medium bg-[var(--hover)] text-[var(--text)] px-2 py-0.5 rounded-md focus:outline-none border border-[var(--border)]"
+                  />
+                </div>
+              ) : (
+                <div className="relative" ref={titleMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setTitleMenuOpen((v) => !v)}
+                    className="flex items-center gap-1.5 text-[14px] font-medium text-[var(--text)] hover:bg-[var(--hover)] px-2 py-1 rounded-lg transition-colors truncate max-w-[400px]"
+                    aria-label="Conversation options"
+                  >
+                    <span className="truncate">{conversationTitle}</span>
+                    <ChevronDown size={14} className="text-[var(--secondary)] shrink-0" />
+                  </button>
+
+                  {/* Title Dropdown Menu */}
+                  {titleMenuOpen && (
+                    <div className="absolute left-0 top-full mt-1.5 z-50 w-36 py-1 rounded-[12px] border border-[var(--border)] bg-[var(--popover-bg)] shadow-xl text-xs animate-popover">
+                      <button
+                        type="button"
+                        onClick={handleStartRename}
+                        className="flex items-center gap-2 w-full px-3 py-1.5 text-left text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                      >
+                        <Pencil size={13} />
+                        <span>Rename</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDeleteConversation}
+                        className="flex items-center gap-2 w-full px-3 py-1.5 text-left text-red-600 dark:text-red-400 hover:bg-[var(--hover)] transition-colors"
+                      >
+                        <Trash2 size={13} />
+                        <span>Delete</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => router.push('/')}
+                title="New chat"
+                aria-label="New chat"
+                className="p-1.5 rounded-lg text-[var(--secondary)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+              >
+                <Plus size={18} />
+              </button>
             </div>
           </div>
+        ) : (
+          /* Floating toggle on Home when sidebar collapsed */
+          !sidebarOpen && (
+            <div className="absolute top-3 left-3 z-30">
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(true)}
+                aria-label="Expand sidebar"
+                className="p-1.5 rounded-lg text-[var(--secondary)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+              >
+                <PanelLeft size={18} />
+              </button>
+            </div>
+          )
         )}
 
         {/* Content Area */}
         {!hasMessages ? (
-          /* Empty State (New Chat) */
-          <div className="flex-1 flex flex-col items-center justify-center p-4 max-w-[720px] w-full mx-auto my-auto space-y-8">
-            {/* Centered Greeting & Mark */}
-            <div className="flex flex-col items-center text-center space-y-3">
-              <div className="w-10 h-10 rounded-2xl bg-[var(--text)] text-[var(--bg)] flex items-center justify-center shadow-xs">
-                <AstorIcon size={22} />
+          /* ==================== HOME / NEW CHAT VIEW ==================== */
+          <div className="flex-1 flex flex-col items-center justify-center p-4 max-w-[660px] w-full mx-auto my-auto space-y-7 -mt-10">
+            {/* Centered Logo & Greeting */}
+            <div className="flex flex-col items-center text-center space-y-3.5">
+              <div className="text-[var(--text)]">
+                <AstorMark size={28} />
               </div>
-              <h1 className="font-serif text-3xl md:text-4xl font-normal tracking-tight text-[var(--text)]">
+              <h1 className="font-serif text-3xl md:text-[36px] font-normal tracking-tight text-[var(--text)] select-none">
                 {greeting}
               </h1>
             </div>
 
-            {/* Centered Composer Card */}
-            <div className="w-full">
-              <div className="relative rounded-[20px] border border-[var(--border)] bg-[var(--card-bg)] shadow-md transition-all focus-within:border-[var(--text)] focus-within:ring-1 focus-within:ring-[var(--text)]/20 p-3">
+            {/* Big Composer Card (~105px tall, radius 20px, 1px border + soft shadow) */}
+            <div className="w-full relative">
+              <div className="relative min-h-[105px] rounded-[20px] border border-[var(--border)] bg-[var(--composer-bg)] shadow-md transition-all focus-within:border-[var(--text)] focus-within:ring-1 focus-within:ring-[var(--text)]/20 p-3.5 flex flex-col justify-between">
                 <textarea
                   ref={textareaRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="How can Astor help you today?"
+                  placeholder="How can I help you today?"
                   rows={2}
                   aria-label="Message Astor"
-                  className="w-full resize-none bg-transparent text-[15px] text-[var(--text)] placeholder-[var(--muted)] focus:outline-none leading-relaxed p-1"
+                  className="w-full resize-none bg-transparent text-[15px] font-sans text-[var(--text)] placeholder-[var(--secondary)] focus:outline-none leading-relaxed p-0.5"
                 />
 
-                <div className="flex items-center justify-between pt-2 border-t border-[var(--border-subtle)]/60">
-                  <div className="text-[11px] text-[var(--muted)] font-sans">
-                    Astor muse-spark-1.3
+                {/* Bottom row inside composer */}
+                <div className="flex items-center justify-between pt-2">
+                  {/* Left: Plus button with popover */}
+                  <div className="relative" ref={plusMenuRef}>
+                    <button
+                      type="button"
+                      onClick={() => setPlusMenuOpen((v) => !v)}
+                      aria-label="Composer options"
+                      className="w-7 h-7 rounded-full flex items-center justify-center text-[var(--secondary)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                    >
+                      <Plus size={18} />
+                    </button>
+
+                    {/* Plus Menu Popover */}
+                    {plusMenuOpen && (
+                      <div className="absolute left-0 bottom-full mb-2 w-48 rounded-[12px] border border-[var(--border)] bg-[var(--popover-bg)] shadow-xl p-1 text-xs animate-popover z-50">
+                        <button
+                          type="button"
+                          onClick={() => setWebSearchEnabled((v) => !v)}
+                          className="flex items-center justify-between w-full px-2.5 py-1.5 rounded-lg text-left text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Globe size={13} className="text-[var(--secondary)]" />
+                            <span>Web search</span>
+                          </div>
+                          {webSearchEnabled && <Check size={13} className="text-[var(--text)]" />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMemoryEnabled((v) => !v)}
+                          className="flex items-center justify-between w-full px-2.5 py-1.5 rounded-lg text-left text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Brain size={13} className="text-[var(--secondary)]" />
+                            <span>Memory</span>
+                          </div>
+                          {memoryEnabled && <Check size={13} className="text-[var(--text)]" />}
+                        </button>
+                      </div>
+                    )}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => handleSend()}
-                    disabled={!input.trim()}
-                    aria-label="Send message"
-                    className="w-8 h-8 rounded-full bg-[var(--text)] text-[var(--bg)] flex items-center justify-center transition-all disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90 active:scale-95"
-                  >
-                    <ArrowUp size={16} />
-                  </button>
+                  {/* Right: Model label & Round send button */}
+                  <div className="flex items-center gap-3">
+                    <span className="text-[12px] text-[var(--secondary)] select-none">
+                      Muse Spark
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleSend()}
+                      disabled={!input.trim()}
+                      aria-label="Send message"
+                      className="w-8 h-8 rounded-full bg-[var(--text)] text-[var(--bg)] flex items-center justify-center transition-all disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90 active:scale-95"
+                    >
+                      <ArrowUp size={16} />
+                    </button>
+                  </div>
                 </div>
               </div>
-              <p className="text-center text-[11px] text-[var(--muted)] mt-2">
-                Astor may make mistakes. Verify important information.
-              </p>
             </div>
 
-            {/* 4 Suggestion Chips */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 w-full pt-2">
-              {suggestionChips.map((chip) => (
-                <button
-                  key={chip}
-                  type="button"
-                  onClick={() => handleSend(chip)}
-                  className="flex items-center text-left p-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[13px] text-[var(--text)] font-sans hover:bg-[var(--surface-hover)] active:scale-[0.99] transition-all shadow-2xs"
-                >
-                  <span className="truncate">{chip}</span>
-                </button>
-              ))}
+            {/* 4 Suggestion Chips with icons */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 w-full pt-1">
+              {suggestionChips.map((chip) => {
+                const ChipIcon = chip.icon;
+                return (
+                  <button
+                    key={chip.label}
+                    type="button"
+                    onClick={() => handleSend(chip.label)}
+                    className="flex items-center gap-2.5 p-3 rounded-xl border border-[var(--border)] bg-[var(--bg)] text-left hover:bg-[var(--hover)] transition-all shadow-2xs group"
+                  >
+                    <ChipIcon
+                      size={15}
+                      className="text-[var(--secondary)] group-hover:text-[var(--text)] transition-colors shrink-0"
+                    />
+                    <span className="text-[13px] text-[var(--text)] truncate font-sans">
+                      {chip.label}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         ) : (
-          /* Active Conversation View */
+          /* ==================== ACTIVE CONVERSATION VIEW ==================== */
           <div
             ref={scrollContainerRef}
             onScroll={handleScroll}
-            className="flex-1 overflow-y-auto px-4 md:px-6 py-6"
+            className="flex-1 overflow-y-auto px-4 md:px-6 py-8"
           >
-            <div className="max-w-[720px] mx-auto space-y-6 pb-36">
-              {messages.map((message) => {
+            <div className="max-w-[770px] mx-auto space-y-7 pb-36">
+              {messages.map((message, idx) => {
                 const isUser = message.role === 'user';
                 const text = getMessageText(message);
+                const isLast = idx === messages.length - 1;
 
                 if (isUser) {
                   return (
                     <div key={message.id} className="flex justify-end">
-                      <div className="max-w-[85%] rounded-2xl px-4 py-2.5 bg-[var(--user-bubble)] border border-[var(--user-bubble-border)] text-[var(--user-bubble-text)] text-[15px] font-sans leading-relaxed shadow-2xs whitespace-pre-wrap">
+                      <div className="max-w-[75%] rounded-[14px] px-4 py-2.5 bg-[var(--user-bubble)] text-[var(--text)] text-[15px] font-sans leading-relaxed shadow-2xs whitespace-pre-wrap selection:bg-[var(--hover)]">
                         {text}
                       </div>
                     </div>
                   );
                 }
 
-                // Assistant Message
+                // Assistant Message (no bubble, serif, no avatar)
+                const currentThumbs = thumbsState[message.id];
+
                 return (
-                  <div key={message.id} className="group/msg w-full space-y-2">
-                    {/* Message Body (Serif & Markdown) */}
-                    <div className="font-serif text-[16px] leading-[1.8] text-[var(--text)] selection:bg-[var(--surface-active)]">
+                  <div key={message.id} className="group/msg w-full space-y-2 pt-1">
+                    {/* Message Body (Serif 16.5px / 1.65, full markdown) */}
+                    <div className="assistant-prose">
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
                         components={{
@@ -334,7 +606,7 @@ export function ChatInterface({
                             }
                             return (
                               <code
-                                className="px-1.5 py-0.5 rounded font-mono text-[13px] bg-[var(--surface-active)] text-[var(--text)] border border-[var(--border-subtle)]"
+                                className="px-1.5 py-0.5 rounded font-mono text-[13px] bg-[var(--hover)] text-[var(--text)] border border-[var(--border)]"
                                 {...props}
                               >
                                 {children}
@@ -352,21 +624,21 @@ export function ChatInterface({
                           },
                           thead({ children }) {
                             return (
-                              <thead className="bg-[var(--surface)] border-b border-[var(--border)]">
+                              <thead className="bg-[var(--hover)]/60 border-b border-[var(--border)]">
                                 {children}
                               </thead>
                             );
                           },
                           th({ children }) {
                             return (
-                              <th className="px-3 py-2 text-xs font-semibold text-[var(--muted)]">
+                              <th className="px-3.5 py-2.5 text-xs font-semibold text-[var(--secondary)]">
                                 {children}
                               </th>
                             );
                           },
                           td({ children }) {
                             return (
-                              <td className="px-3 py-2 border-t border-[var(--border)] text-sm">
+                              <td className="px-3.5 py-2.5 border-t border-[var(--border)] text-sm font-sans">
                                 {children}
                               </td>
                             );
@@ -394,7 +666,7 @@ export function ChatInterface({
                           },
                           blockquote({ children }) {
                             return (
-                              <blockquote className="border-l-2 border-[var(--muted)] pl-4 italic my-3 text-[var(--muted)]">
+                              <blockquote className="border-l-2 border-[var(--secondary)] pl-4 italic my-3 text-[var(--secondary)]">
                                 {children}
                               </blockquote>
                             );
@@ -405,73 +677,96 @@ export function ChatInterface({
                       </ReactMarkdown>
                     </div>
 
-                    {/* Action Bar Under Message */}
-                    <div className="flex items-center gap-3 pt-1 text-xs text-[var(--muted)] font-sans">
+                    {/* Action Bar Under Assistant Reply: Copy, Thumbs up, Thumbs down, Retry, relative time */}
+                    <div
+                      className={`flex items-center gap-2 pt-1 text-xs text-[var(--secondary)] font-sans transition-opacity ${
+                        isLast ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'
+                      }`}
+                    >
+                      {/* Copy */}
                       <button
                         type="button"
                         onClick={() => handleCopyMessage(message.id, text)}
-                        aria-label="Copy message text"
-                        className="flex items-center gap-1 hover:text-[var(--text)] transition-colors active:scale-95"
+                        aria-label="Copy message"
+                        className="p-1 rounded-md hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                        title="Copy text"
                       >
                         {copiedMessageId === message.id ? (
-                          <>
-                            <Check size={13} className="text-[var(--text)]" />
-                            <span className="text-[11px]">Copied</span>
-                          </>
+                          <Check size={14} className="text-[var(--text)]" />
                         ) : (
-                          <>
-                            <Copy size={13} />
-                            <span className="text-[11px]">Copy</span>
-                          </>
+                          <Copy size={14} />
                         )}
                       </button>
 
+                      {/* Thumbs up */}
+                      <button
+                        type="button"
+                        onClick={() => handleToggleThumbs(message.id, 'up')}
+                        aria-label="Good response"
+                        className={`p-1 rounded-md hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors ${
+                          currentThumbs === 'up' ? 'text-[var(--text)] bg-[var(--hover)]' : ''
+                        }`}
+                        title="Good response"
+                      >
+                        <ThumbsUp size={14} />
+                      </button>
+
+                      {/* Thumbs down */}
+                      <button
+                        type="button"
+                        onClick={() => handleToggleThumbs(message.id, 'down')}
+                        aria-label="Bad response"
+                        className={`p-1 rounded-md hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors ${
+                          currentThumbs === 'down' ? 'text-[var(--text)] bg-[var(--hover)]' : ''
+                        }`}
+                        title="Bad response"
+                      >
+                        <ThumbsDown size={14} />
+                      </button>
+
+                      {/* Retry */}
                       <button
                         type="button"
                         onClick={() => regenerate({ messageId: message.id })}
-                        aria-label="Regenerate reply"
-                        className="flex items-center gap-1 hover:text-[var(--text)] transition-colors active:scale-95"
+                        aria-label="Retry response"
+                        className="p-1 rounded-md hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                        title="Retry response"
                       >
-                        <RotateCw size={13} />
-                        <span className="text-[11px]">Retry</span>
+                        <RotateCw size={14} />
                       </button>
 
-                      <span className="text-[11px] opacity-70">
-                        {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {/* Timestamp with exact tooltip */}
+                      <span
+                        className="text-[11px] opacity-75 pl-1 cursor-default"
+                        title={new Date().toLocaleString()}
+                      >
+                        {formatRelativeTime()}
                       </span>
                     </div>
                   </div>
                 );
               })}
 
-              {/* Waiting for first token shimmer */}
+              {/* Waiting for first token: pulsing AstorMark */}
               {status === 'submitted' && (
-                <div className="flex items-center gap-2 py-2 text-[var(--muted)]">
-                  <div className="animate-pulse-subtle">
-                    <AstorIcon size={16} />
+                <div className="flex items-center gap-3 py-3">
+                  <div className="animate-pulse-subtle text-[var(--text)]">
+                    <AstorMark size={18} />
                   </div>
-                  <div className="flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--muted)] animate-bounce" />
-                    <span
-                      className="w-1.5 h-1.5 rounded-full bg-[var(--muted)] animate-bounce"
-                      style={{ animationDelay: '0.15s' }}
-                    />
-                    <span
-                      className="w-1.5 h-1.5 rounded-full bg-[var(--muted)] animate-bounce"
-                      style={{ animationDelay: '0.3s' }}
-                    />
-                  </div>
+                  <span className="text-xs text-[var(--secondary)] font-sans">
+                    Astor is thinking...
+                  </span>
                 </div>
               )}
 
-              {/* Inline Error Message */}
+              {/* One tidy inline error card in chat only */}
               {error && (
-                <div className="flex items-start gap-3 p-3.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-xs text-[var(--text)] shadow-xs">
-                  <AlertCircle size={16} className="text-[var(--muted)] shrink-0 mt-0.5" />
+                <div className="flex items-start gap-3 p-3.5 rounded-xl border border-[var(--border)] bg-[var(--user-bubble)] text-xs text-[var(--text)] shadow-xs animate-popover">
+                  <AlertCircle size={16} className="text-[var(--secondary)] shrink-0 mt-0.5" />
                   <div className="flex-1 space-y-1 font-sans">
                     <p className="font-medium">Error communicating with Astor</p>
-                    <p className="text-[var(--muted)] leading-relaxed">
-                      {error.message || 'An error occurred during generation.'}
+                    <p className="text-[var(--secondary)] leading-relaxed">
+                      {error.message || 'An error occurred during response generation. Check META_API_KEY in .env.'}
                     </p>
                   </div>
                 </div>
@@ -488,17 +783,17 @@ export function ChatInterface({
             type="button"
             onClick={() => scrollToBottom('smooth')}
             aria-label="Scroll to bottom"
-            className="absolute bottom-28 right-8 z-30 p-2 rounded-full border border-[var(--border)] bg-[var(--card-bg)] text-[var(--text)] shadow-md hover:bg-[var(--surface-hover)] active:scale-95 transition-all"
+            className="absolute bottom-28 right-8 z-30 p-2 rounded-full border border-[var(--border)] bg-[var(--popover-bg)] text-[var(--text)] shadow-lg hover:bg-[var(--hover)] active:scale-95 transition-all"
           >
             <ChevronDown size={18} />
           </button>
         )}
 
-        {/* Pinned Composer at Bottom (in active conversation view) */}
+        {/* ==================== COMPOSER IN CHAT ==================== */}
         {hasMessages && (
-          <div className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-[var(--bg)] via-[var(--bg)] to-transparent pt-6 pb-4 px-4">
-            <div className="max-w-[720px] mx-auto w-full">
-              <div className="relative rounded-[20px] border border-[var(--border)] bg-[var(--card-bg)] shadow-md transition-all focus-within:border-[var(--text)] focus-within:ring-1 focus-within:ring-[var(--text)]/20 p-3">
+          <div className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-[var(--bg)] via-[var(--bg)] to-transparent pt-6 pb-3 px-4">
+            <div className="max-w-[770px] mx-auto w-full">
+              <div className="relative rounded-[20px] border border-[var(--border)] bg-[var(--composer-bg)] shadow-md transition-all focus-within:border-[var(--text)] focus-within:ring-1 focus-within:ring-[var(--text)]/20 p-2.5 flex flex-col justify-between">
                 <textarea
                   ref={textareaRef}
                   value={input}
@@ -507,39 +802,80 @@ export function ChatInterface({
                   placeholder="Reply to Astor..."
                   rows={1}
                   aria-label="Message Astor"
-                  className="w-full resize-none bg-transparent text-[15px] text-[var(--text)] placeholder-[var(--muted)] focus:outline-none leading-relaxed p-1 max-h-[200px]"
+                  className="w-full resize-none bg-transparent text-[15px] font-sans text-[var(--text)] placeholder-[var(--secondary)] focus:outline-none leading-relaxed p-1 max-h-[200px]"
                 />
 
-                <div className="flex items-center justify-between pt-2 border-t border-[var(--border-subtle)]/60">
-                  <div className="text-[11px] text-[var(--muted)] font-sans">
-                    Astor muse-spark-1.3
+                {/* Bottom row inside chat composer */}
+                <div className="flex items-center justify-between pt-1">
+                  {/* Left: Plus button with popover */}
+                  <div className="relative" ref={plusMenuRef}>
+                    <button
+                      type="button"
+                      onClick={() => setPlusMenuOpen((v) => !v)}
+                      aria-label="Composer options"
+                      className="w-7 h-7 rounded-full flex items-center justify-center text-[var(--secondary)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                    >
+                      <Plus size={18} />
+                    </button>
+
+                    {/* Plus Menu Popover */}
+                    {plusMenuOpen && (
+                      <div className="absolute left-0 bottom-full mb-2 w-48 rounded-[12px] border border-[var(--border)] bg-[var(--popover-bg)] shadow-xl p-1 text-xs animate-popover z-50">
+                        <button
+                          type="button"
+                          onClick={() => setWebSearchEnabled((v) => !v)}
+                          className="flex items-center justify-between w-full px-2.5 py-1.5 rounded-lg text-left text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Globe size={13} className="text-[var(--secondary)]" />
+                            <span>Web search</span>
+                          </div>
+                          {webSearchEnabled && <Check size={13} className="text-[var(--text)]" />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMemoryEnabled((v) => !v)}
+                          className="flex items-center justify-between w-full px-2.5 py-1.5 rounded-lg text-left text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Brain size={13} className="text-[var(--secondary)]" />
+                            <span>Memory</span>
+                          </div>
+                          {memoryEnabled && <Check size={13} className="text-[var(--text)]" />}
+                        </button>
+                      </div>
+                    )}
                   </div>
 
-                  {isStreaming ? (
-                    <button
-                      type="button"
-                      onClick={() => stop()}
-                      aria-label="Stop generation"
-                      className="w-8 h-8 rounded-full bg-[var(--text)] text-[var(--bg)] flex items-center justify-center transition-all hover:opacity-90 active:scale-95"
-                    >
-                      <Square size={13} fill="currentColor" />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => handleSend()}
-                      disabled={!input.trim()}
-                      aria-label="Send message"
-                      className="w-8 h-8 rounded-full bg-[var(--text)] text-[var(--bg)] flex items-center justify-center transition-all disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90 active:scale-95"
-                    >
-                      <ArrowUp size={16} />
-                    </button>
-                  )}
+                  {/* Right: Send arrow or stop square */}
+                  <div className="flex items-center gap-2">
+                    {isStreaming ? (
+                      <button
+                        type="button"
+                        onClick={() => stop()}
+                        aria-label="Stop generation"
+                        className="w-8 h-8 rounded-full bg-[var(--text)] text-[var(--bg)] flex items-center justify-center transition-all hover:opacity-90 active:scale-95"
+                      >
+                        <Square size={13} fill="currentColor" />
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleSend()}
+                        disabled={!input.trim()}
+                        aria-label="Send message"
+                        className="w-8 h-8 rounded-full bg-[var(--text)] text-[var(--bg)] flex items-center justify-center transition-all disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90 active:scale-95"
+                      >
+                        <ArrowUp size={16} />
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              <p className="text-center text-[11px] text-[var(--muted)] mt-2">
-                Astor may make mistakes. Verify important information.
+              {/* Disclaimer */}
+              <p className="text-center text-[11px] text-[var(--secondary)] mt-2">
+                Astor can make mistakes. Check important info.
               </p>
             </div>
           </div>

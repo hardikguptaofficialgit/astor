@@ -2,38 +2,40 @@
 
 :root {
   --bg: #FFFFFF;
-  --surface: #F7F7F7;
-  --surface-hover: #EFEFEF;
-  --surface-active: #E6E6E6;
-  --border: #E6E6E6;
-  --border-subtle: #EEEEEE;
+  --sidebar-bg: #F7F7F7;
+  --user-bubble: #F0F0F0;
+  --popover-bg: #FFFFFF;
+  --composer-bg: #FFFFFF;
+  --border: #E5E5E5;
+  --border-subtle: #ECECEC;
   --text: #0A0A0A;
-  --muted: #6B6B6B;
-  --user-bubble: #F2F2F2;
-  --user-bubble-border: #E5E5E5;
-  --user-bubble-text: #0A0A0A;
+  --secondary: #737373;
+  --hover: #EDEDED;
+  --accent: #0A0A0A;
+
+  /* Code block colors */
   --code-bg: #111111;
   --code-text: #F0F0F0;
   --code-header: #1C1C1C;
-  --card-bg: #FFFFFF;
 }
 
 html.dark {
   --bg: #0A0A0A;
-  --surface: #141414;
-  --surface-hover: #1E1E1E;
-  --surface-active: #262626;
+  --sidebar-bg: #141414;
+  --user-bubble: #1F1F1F;
+  --popover-bg: #1A1A1A;
+  --composer-bg: #1A1A1A;
   --border: #262626;
-  --border-subtle: #1C1C1C;
-  --text: #FAFAFA;
-  --muted: #9A9A9A;
-  --user-bubble: #1C1C1C;
-  --user-bubble-border: #2B2B2B;
-  --user-bubble-text: #FAFAFA;
+  --border-subtle: #222222;
+  --text: #F5F5F5;
+  --secondary: #8F8F8F;
+  --hover: #1F1F1F;
+  --accent: #F5F5F5;
+
+  /* Code block colors */
   --code-bg: #000000;
   --code-text: #E6E6E6;
   --code-header: #141414;
-  --card-bg: #141414;
 }
 
 body {
@@ -71,18 +73,87 @@ body {
   background: rgba(128, 128, 128, 0.35);
 }
 
-/* Pulsing shimmer animation for streaming waiting state */
+/* Soft scale and opacity pulse for initial token waiting */
 @keyframes pulse-subtle {
   0%, 100% {
-    opacity: 0.3;
-    transform: scale(0.97);
+    opacity: 0.35;
+    transform: scale(0.96);
   }
   50% {
     opacity: 1;
-    transform: scale(1.03);
+    transform: scale(1.04);
   }
 }
 
 .animate-pulse-subtle {
-  animation: pulse-subtle 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  animation: pulse-subtle 1.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Assistant reply typography */
+.assistant-prose {
+  font-family: var(--font-serif), Georgia, Cambria, "Times New Roman", Times, serif;
+  font-size: 16.5px;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+.assistant-prose p {
+  margin-top: 0.75em;
+  margin-bottom: 0.75em;
+}
+
+.assistant-prose p:first-child {
+  margin-top: 0;
+}
+
+.assistant-prose p:last-child {
+  margin-bottom: 0;
+}
+
+.assistant-prose h1,
+.assistant-prose h2,
+.assistant-prose h3,
+.assistant-prose h4 {
+  font-family: var(--font-serif), Georgia, Cambria, "Times New Roman", Times, serif;
+  font-weight: 500;
+  color: var(--text);
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+  letter-spacing: -0.015em;
+}
+
+.assistant-prose h1 { font-size: 1.5em; }
+.assistant-prose h2 { font-size: 1.3em; }
+.assistant-prose h3 { font-size: 1.15em; }
+.assistant-prose h4 { font-size: 1.05em; }
+
+.assistant-prose a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  color: var(--text);
+}
+
+.assistant-prose blockquote {
+  border-left: 2px solid var(--secondary);
+  padding-left: 1rem;
+  font-style: italic;
+  color: var(--secondary);
+  margin-top: 0.85em;
+  margin-bottom: 0.85em;
+}
+
+/* Fast popover fade + scale */
+@keyframes popover-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-popover {
+  animation: popover-enter 150ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }

@@ -1,12 +1,12 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import {
-  PanelLeftClose,
   PanelLeft,
   Plus,
+  Search,
   MoreHorizontal,
   Pencil,
   Trash2,
@@ -15,9 +15,13 @@ import {
   Laptop,
   Check,
   X,
+  Keyboard,
+  Info,
+  ChevronDown,
 } from 'lucide-react';
-import { AstorIcon } from './astor-icon';
+import { AstorMark } from './astor-mark';
 import { useTheme } from './theme-provider';
+import { SearchModal } from './search-modal';
 
 export interface ConversationItem {
   id: string;
@@ -30,8 +34,8 @@ interface SidebarProps {
   currentId?: string;
   isOpen: boolean;
   onToggle: () => void;
-  onRefreshConversations?: () => void;
   refreshKey?: number;
+  optimisticConversation?: ConversationItem | null;
 }
 
 export function Sidebar({
@@ -39,42 +43,132 @@ export function Sidebar({
   isOpen,
   onToggle,
   refreshKey = 0,
+  optimisticConversation,
 }: SidebarProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const { theme, setTheme, resolvedTheme } = useTheme();
+  const { theme, setTheme } = useTheme();
 
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [shortcutsModalOpen, setShortcutsModalOpen] = useState(false);
+  const [aboutModalOpen, setAboutModalOpen] = useState(false);
+
   const menuRef = useRef<HTMLDivElement>(null);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch conversations
-  const fetchConversations = async () => {
+  // Fetch conversations from server
+  const fetchConversations = useCallback(async () => {
     try {
       const res = await fetch('/api/conversations');
       if (res.ok) {
-        const data = await res.json();
+        const data: ConversationItem[] = await res.json();
         setConversations(data);
       }
     } catch {}
-  };
+  }, []);
 
   useEffect(() => {
     fetchConversations();
-  }, [refreshKey, pathname]);
+  }, [fetchConversations, refreshKey, pathname]);
 
-  // Close context menu on outside click
+  // Handle optimistic conversation insertion immediately
+  useEffect(() => {
+    if (optimisticConversation) {
+      setConversations((prev) => {
+        const exists = prev.some((c) => c.id === optimisticConversation.id);
+        if (exists) {
+          return prev.map((c) =>
+            c.id === optimisticConversation.id
+              ? { ...c, title: optimisticConversation.title, updated_at: optimisticConversation.updated_at }
+              : c
+          );
+        }
+        return [optimisticConversation, ...prev];
+      });
+    }
+  }, [optimisticConversation]);
+
+  // Listen to custom window events for live synchronization
+  useEffect(() => {
+    const handleCustomUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent<ConversationItem>;
+      if (customEvent.detail) {
+        setConversations((prev) => {
+          const exists = prev.some((c) => c.id === customEvent.detail.id);
+          if (exists) {
+            return prev.map((c) =>
+              c.id === customEvent.detail.id
+                ? { ...c, title: customEvent.detail.title, updated_at: customEvent.detail.updated_at }
+                : c
+            );
+          }
+          return [customEvent.detail, ...prev];
+        });
+      } else {
+        fetchConversations();
+      }
+    };
+
+    window.addEventListener('astor:conversation-updated', handleCustomUpdate);
+    return () => window.removeEventListener('astor:conversation-updated', handleCustomUpdate);
+  }, [fetchConversations]);
+
+  // Global keyboard shortcuts: Ctrl+K, Ctrl+Shift+O, Ctrl+B
+  useEffect(() => {
+    const handleGlobalShortcuts = (e: KeyboardEvent) => {
+      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+
+      // Ctrl+K -> Search
+      if (cmdOrCtrl && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setSearchOpen((prev) => !prev);
+      }
+      // Ctrl+Shift+O -> New chat
+      if (cmdOrCtrl && e.shiftKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        router.push('/');
+      }
+      // Ctrl+B -> Toggle sidebar
+      if (cmdOrCtrl && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        onToggle();
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalShortcuts);
+    return () => window.removeEventListener('keydown', handleGlobalShortcuts);
+  }, [onToggle, router]);
+
+  // Close menus on outside click or Esc
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setActiveMenuId(null);
       }
+      if (accountMenuRef.current && !accountMenuRef.current.contains(e.target as Node)) {
+        setAccountMenuOpen(false);
+      }
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setActiveMenuId(null);
+        setAccountMenuOpen(false);
+        setEditingId(null);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEsc);
+    };
   }, []);
 
   // Focus rename input when activated
@@ -94,21 +188,20 @@ export function Sidebar({
   };
 
   const handleSaveRename = async (id: string) => {
-    if (!editingTitle.trim()) {
+    const trimmed = editingTitle.trim();
+    if (!trimmed) {
       setEditingId(null);
       return;
     }
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, title: trimmed } : c))
+    );
     try {
-      const res = await fetch(`/api/conversations/${id}`, {
+      await fetch(`/api/conversations/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: editingTitle.trim() }),
+        body: JSON.stringify({ title: trimmed }),
       });
-      if (res.ok) {
-        setConversations((prev) =>
-          prev.map((c) => (c.id === id ? { ...c, title: editingTitle.trim() } : c))
-        );
-      }
     } catch {}
     setEditingId(null);
   };
@@ -117,53 +210,14 @@ export function Sidebar({
     e.stopPropagation();
     e.preventDefault();
     setActiveMenuId(null);
+    setConversations((prev) => prev.filter((c) => c.id !== id));
     try {
-      const res = await fetch(`/api/conversations/${id}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        setConversations((prev) => prev.filter((c) => c.id !== id));
-        if (currentId === id) {
-          router.push('/');
-        }
+      const res = await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
+      if (res.ok && currentId === id) {
+        router.push('/');
       }
     } catch {}
   };
-
-  // Grouping helper
-  const groupConversations = () => {
-    const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
-    const sevenDaysAgo = startOfToday - 6 * 24 * 60 * 60 * 1000;
-
-    const today: ConversationItem[] = [];
-    const yesterday: ConversationItem[] = [];
-    const last7Days: ConversationItem[] = [];
-    const older: ConversationItem[] = [];
-
-    for (const conv of conversations) {
-      const time = new Date(conv.updated_at || conv.created_at).getTime();
-      if (time >= startOfToday) {
-        today.push(conv);
-      } else if (time >= startOfYesterday) {
-        yesterday.push(conv);
-      } else if (time >= sevenDaysAgo) {
-        last7Days.push(conv);
-      } else {
-        older.push(conv);
-      }
-    }
-
-    return [
-      { label: 'Today', items: today },
-      { label: 'Yesterday', items: yesterday },
-      { label: 'Previous 7 days', items: last7Days },
-      { label: 'Older', items: older },
-    ].filter((group) => group.items.length > 0);
-  };
-
-  const grouped = groupConversations();
 
   return (
     <>
@@ -171,261 +225,406 @@ export function Sidebar({
       {isOpen && (
         <div
           onClick={onToggle}
-          className="fixed inset-0 z-40 bg-black/40 backdrop-blur-xs md:hidden"
+          className="fixed inset-0 z-40 bg-black/40 backdrop-blur-xs md:hidden transition-opacity"
           aria-hidden="true"
         />
       )}
 
-      {/* Sidebar Container */}
+      {/* Sidebar Container: ~288px width, 200ms ease */}
       <aside
-        className={`fixed md:static inset-y-0 left-0 z-50 flex flex-col h-full bg-[var(--surface)] border-r border-[var(--border)] transition-[width,transform] duration-200 ease-in-out ${
+        className={`fixed md:relative inset-y-0 left-0 z-50 flex flex-col h-full bg-[var(--sidebar-bg)] border-r border-[var(--border)] transition-all duration-200 ease-in-out shrink-0 select-none ${
           isOpen
-            ? 'w-[260px] translate-x-0'
-            : '-translate-x-full md:translate-x-0 md:w-[60px]'
+            ? 'w-[288px] translate-x-0'
+            : '-translate-x-full md:w-0 md:opacity-0 md:pointer-events-none md:border-r-0'
         }`}
       >
-        {/* Top Header */}
-        <div className="flex items-center justify-between p-3.5 h-[56px] border-b border-[var(--border-subtle)]">
-          {isOpen ? (
+        <div className="flex flex-col h-full w-[288px] overflow-hidden">
+          {/* Top Header: Toggle + Logo + Astor */}
+          <div className="flex items-center justify-between px-3 h-[52px] border-b border-[var(--border)] shrink-0">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onToggle}
+                aria-label="Collapse sidebar"
+                className="p-1.5 rounded-lg text-[var(--secondary)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+              >
+                <PanelLeft size={18} />
+              </button>
+              <Link
+                href="/"
+                className="flex items-center gap-2 group pl-0.5"
+                aria-label="Astor Home"
+              >
+                <div className="text-[var(--text)] transition-transform group-hover:scale-105">
+                  <AstorMark size={22} />
+                </div>
+                <span className="font-serif text-[18px] font-medium tracking-tight text-[var(--text)]">
+                  Astor
+                </span>
+              </Link>
+            </div>
+          </div>
+
+          {/* Top Action Rows: New chat & Search */}
+          <div className="px-3 pt-3 pb-1 space-y-1 shrink-0">
+            {/* New chat pill highlight */}
             <Link
               href="/"
-              className="flex items-center gap-2.5 group overflow-hidden"
-              aria-label="Astor Home"
+              className="group/new flex items-center justify-between w-full h-9 px-2.5 rounded-lg bg-[var(--hover)] hover:opacity-90 text-[var(--text)] text-[13.5px] font-medium transition-all"
+              aria-label="New chat"
             >
-              <div className="w-7 h-7 rounded-lg bg-[var(--text)] text-[var(--bg)] flex items-center justify-center shrink-0 transition-transform group-hover:scale-105">
-                <AstorIcon size={16} />
+              <div className="flex items-center gap-2.5">
+                <Plus size={16} />
+                <span>New chat</span>
               </div>
-              <span className="font-serif text-[19px] font-semibold tracking-tight text-[var(--text)]">
-                Astor
+              <span className="opacity-0 group-hover/new:opacity-100 text-[10.5px] font-mono text-[var(--secondary)] transition-opacity">
+                Ctrl+Shift+O
               </span>
             </Link>
-          ) : (
-            <Link
-              href="/"
-              className="mx-auto w-7 h-7 rounded-lg bg-[var(--text)] text-[var(--bg)] flex items-center justify-center shrink-0 hover:scale-105 transition-transform"
-              aria-label="Astor Home"
+
+            {/* Search row */}
+            <button
+              type="button"
+              onClick={() => setSearchOpen(true)}
+              className="group/search flex items-center justify-between w-full h-8 px-2.5 rounded-lg text-[var(--text)] hover:bg-[var(--hover)] text-[13.5px] transition-colors"
+              aria-label="Search conversations"
             >
-              <AstorIcon size={16} />
-            </Link>
-          )}
+              <div className="flex items-center gap-2.5 text-[var(--secondary)] group-hover/search:text-[var(--text)]">
+                <Search size={15} />
+                <span className="text-[var(--text)]">Search</span>
+              </div>
+              <span className="text-[10.5px] font-mono text-[var(--secondary)]">
+                Ctrl+K
+              </span>
+            </button>
+          </div>
 
-          <button
-            onClick={onToggle}
-            type="button"
-            aria-label={isOpen ? 'Collapse sidebar' : 'Expand sidebar'}
-            className="p-1.5 rounded-md text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--surface-hover)] transition-colors"
-          >
-            {isOpen ? <PanelLeftClose size={18} /> : <PanelLeft size={18} />}
-          </button>
-        </div>
+          {/* Recents Section Header */}
+          <div className="px-4 pt-4 pb-1.5 flex items-center justify-between shrink-0">
+            <span className="text-[12px] font-medium text-[var(--secondary)]">
+              Recents
+            </span>
+          </div>
 
-        {/* New Chat Button */}
-        <div className="p-3">
-          <Link
-            href="/"
-            className={`flex items-center justify-center gap-2 w-full py-2 px-3 rounded-xl border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] font-sans text-sm font-medium hover:bg-[var(--surface-hover)] active:scale-[0.98] transition-all shadow-2xs ${
-              !isOpen ? 'px-0 justify-center' : ''
-            }`}
-            aria-label="Start a new chat"
-          >
-            <Plus size={16} />
-            {isOpen && <span>New chat</span>}
-          </Link>
-        </div>
-
-        {/* Recents Conversations List */}
-        <div className="flex-1 overflow-y-auto px-2 py-1 space-y-4">
-          {isOpen ? (
-            grouped.length === 0 ? (
-              <div className="px-3 py-6 text-center text-xs text-[var(--muted)]">
+          {/* Conversations List */}
+          <div className="flex-1 overflow-y-auto px-2 py-0.5 space-y-0.5">
+            {conversations.length === 0 ? (
+              <div className="px-3 py-6 text-center text-[12px] text-[var(--secondary)]">
                 No recent conversations
               </div>
             ) : (
-              grouped.map((group) => (
-                <div key={group.label} className="space-y-1">
-                  <div className="px-2.5 py-1 text-[11px] font-medium uppercase tracking-wider text-[var(--muted)]">
-                    {group.label}
-                  </div>
-                  {group.items.map((conv) => {
-                    const isActive = currentId === conv.id;
-                    const isEditing = editingId === conv.id;
+              conversations.map((conv) => {
+                const isActive = currentId === conv.id;
+                const isEditing = editingId === conv.id;
 
-                    return (
-                      <div
-                        key={conv.id}
-                        className="relative group rounded-lg"
+                if (isEditing) {
+                  return (
+                    <div
+                      key={conv.id}
+                      className="flex items-center gap-1 px-2.5 h-8 bg-[var(--hover)] rounded-lg"
+                    >
+                      <input
+                        ref={editInputRef}
+                        type="text"
+                        value={editingTitle}
+                        onChange={(e) => setEditingTitle(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveRename(conv.id);
+                          if (e.key === 'Escape') setEditingId(null);
+                        }}
+                        className="w-full text-[13px] bg-transparent text-[var(--text)] focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSaveRename(conv.id)}
+                        className="p-1 text-[var(--text)] hover:opacity-70"
+                        aria-label="Save title"
                       >
-                        {isEditing ? (
-                          <div className="flex items-center gap-1 px-2 py-1 bg-[var(--surface-active)] rounded-lg">
-                            <input
-                              ref={editInputRef}
-                              type="text"
-                              value={editingTitle}
-                              onChange={(e) => setEditingTitle(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleSaveRename(conv.id);
-                                if (e.key === 'Escape') setEditingId(null);
-                              }}
-                              className="w-full text-xs bg-transparent text-[var(--text)] focus:outline-none"
-                            />
-                            <button
-                              onClick={() => handleSaveRename(conv.id)}
-                              className="p-1 text-[var(--text)] hover:opacity-70"
-                              aria-label="Confirm rename"
-                            >
-                              <Check size={13} />
-                            </button>
-                            <button
-                              onClick={() => setEditingId(null)}
-                              className="p-1 text-[var(--muted)] hover:opacity-70"
-                              aria-label="Cancel rename"
-                            >
-                              <X size={13} />
-                            </button>
-                          </div>
-                        ) : (
-                          <div
-                            className={`flex items-center justify-between w-full px-2.5 py-1.5 rounded-lg text-xs font-sans transition-colors ${
-                              isActive
-                                ? 'bg-[var(--surface-active)] text-[var(--text)] font-medium'
-                                : 'text-[var(--text)] hover:bg-[var(--surface-hover)]'
-                            }`}
-                          >
-                            <Link
-                              href={`/c/${conv.id}`}
-                              className="truncate flex-1 pr-2 text-left"
-                              title={conv.title}
-                            >
-                              {conv.title}
-                            </Link>
+                        <Check size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingId(null)}
+                        className="p-1 text-[var(--secondary)] hover:opacity-70"
+                        aria-label="Cancel rename"
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  );
+                }
 
-                            {/* Menu Trigger */}
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                e.preventDefault();
-                                setActiveMenuId(activeMenuId === conv.id ? null : conv.id);
-                              }}
-                              aria-label="Conversation options"
-                              className={`p-1 rounded text-[var(--muted)] hover:text-[var(--text)] transition-opacity ${
-                                activeMenuId === conv.id
-                                  ? 'opacity-100 bg-[var(--surface-hover)]'
-                                  : 'opacity-0 group-hover:opacity-100'
-                              }`}
-                            >
-                              <MoreHorizontal size={14} />
-                            </button>
-                          </div>
-                        )}
+                return (
+                  <div
+                    key={conv.id}
+                    className={`group/row relative flex items-center justify-between h-8 px-2.5 rounded-lg text-[13.5px] transition-colors ${
+                      isActive
+                        ? 'bg-[var(--hover)] font-medium text-[var(--text)]'
+                        : 'text-[var(--text)] hover:bg-[var(--hover)]'
+                    }`}
+                  >
+                    <Link
+                      href={`/c/${conv.id}`}
+                      className="truncate flex-1 pr-2 text-left"
+                      title={conv.title}
+                    >
+                      {conv.title}
+                    </Link>
 
-                        {/* Menu Dropdown */}
-                        {activeMenuId === conv.id && (
-                          <div
-                            ref={menuRef}
-                            className="absolute right-1 top-8 z-50 w-32 py-1 rounded-lg border border-[var(--border)] bg-[var(--card-bg)] shadow-lg text-xs"
-                          >
-                            <button
-                              type="button"
-                              onClick={(e) => handleStartRename(conv, e)}
-                              className="flex items-center gap-2 w-full px-3 py-1.5 text-left text-[var(--text)] hover:bg-[var(--surface-hover)] transition-colors"
-                            >
-                              <Pencil size={12} />
-                              <span>Rename</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => handleDelete(conv.id, e)}
-                              className="flex items-center gap-2 w-full px-3 py-1.5 text-left text-[var(--text)] hover:bg-[var(--surface-hover)] transition-colors"
-                            >
-                              <Trash2 size={12} />
-                              <span>Delete</span>
-                            </button>
+                    {/* Options Button "..." on hover */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        setActiveMenuId(activeMenuId === conv.id ? null : conv.id);
+                      }}
+                      aria-label="Conversation options"
+                      className={`p-1 rounded-md text-[var(--secondary)] hover:text-[var(--text)] transition-opacity ${
+                        activeMenuId === conv.id
+                          ? 'opacity-100 bg-[var(--border)]'
+                          : 'opacity-0 group-hover/row:opacity-100'
+                      }`}
+                    >
+                      <MoreHorizontal size={14} />
+                    </button>
+
+                    {/* Options Popover Menu */}
+                    {activeMenuId === conv.id && (
+                      <div
+                        ref={menuRef}
+                        className="absolute right-2 top-8 z-50 w-36 py-1 rounded-[12px] border border-[var(--border)] bg-[var(--popover-bg)] shadow-xl text-xs animate-popover"
+                      >
+                        <button
+                          type="button"
+                          onClick={(e) => handleStartRename(conv, e)}
+                          className="flex items-center justify-between w-full px-3 py-1.5 text-left text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Pencil size={13} />
+                            <span>Rename</span>
                           </div>
-                        )}
+                          <span className="text-[10px] text-[var(--secondary)] font-mono">R</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDelete(conv.id, e)}
+                          className="flex items-center justify-between w-full px-3 py-1.5 text-left text-red-600 dark:text-red-400 hover:bg-[var(--hover)] transition-colors"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Trash2 size={13} />
+                            <span>Delete</span>
+                          </div>
+                          <span className="text-[10px] text-red-500/80 font-mono">D</span>
+                        </button>
                       </div>
-                    );
-                  })}
-                </div>
-              ))
-            )
-          ) : (
-            /* Icon Rail View */
-            <div className="flex flex-col items-center py-2 space-y-2">
-              {conversations.slice(0, 8).map((conv) => (
-                <Link
-                  key={conv.id}
-                  href={`/c/${conv.id}`}
-                  title={conv.title}
-                  className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-serif transition-colors ${
-                    currentId === conv.id
-                      ? 'bg-[var(--surface-active)] text-[var(--text)] font-semibold'
-                      : 'text-[var(--muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]'
-                  }`}
-                >
-                  {conv.title.charAt(0).toUpperCase()}
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
 
-        {/* Sidebar Footer with Theme Toggle */}
-        <div className="p-3 border-t border-[var(--border-subtle)]">
-          {isOpen ? (
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-[var(--muted)]">Theme</span>
-              <div className="flex items-center p-0.5 rounded-lg border border-[var(--border)] bg-[var(--bg)]">
+          {/* Bottom Account Row & Upward Menu */}
+          <div className="p-2 border-t border-[var(--border)] relative shrink-0">
+            {/* Upward Account Menu */}
+            {accountMenuOpen && (
+              <div
+                ref={accountMenuRef}
+                className="absolute left-2 right-2 bottom-full mb-2 p-1.5 rounded-[12px] border border-[var(--border)] bg-[var(--popover-bg)] shadow-xl text-xs space-y-1 animate-popover z-50"
+              >
+                <div className="px-2.5 py-1 text-[11px] font-medium text-[var(--secondary)]">
+                  hardik
+                </div>
+                <div className="h-px bg-[var(--border)] my-1" />
+
+                {/* Theme Selector */}
+                <div className="px-2 py-1 text-[11px] font-medium text-[var(--secondary)]">
+                  Theme
+                </div>
+                <div className="grid grid-cols-3 gap-1 p-0.5 rounded-lg bg-[var(--hover)]">
+                  <button
+                    type="button"
+                    onClick={() => setTheme('light')}
+                    className={`flex items-center justify-center gap-1.5 py-1 px-1.5 rounded-md text-[11px] transition-colors ${
+                      theme === 'light'
+                        ? 'bg-[var(--popover-bg)] text-[var(--text)] shadow-xs font-medium'
+                        : 'text-[var(--secondary)] hover:text-[var(--text)]'
+                    }`}
+                  >
+                    <Sun size={12} />
+                    <span>Light</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTheme('dark')}
+                    className={`flex items-center justify-center gap-1.5 py-1 px-1.5 rounded-md text-[11px] transition-colors ${
+                      theme === 'dark'
+                        ? 'bg-[var(--popover-bg)] text-[var(--text)] shadow-xs font-medium'
+                        : 'text-[var(--secondary)] hover:text-[var(--text)]'
+                    }`}
+                  >
+                    <Moon size={12} />
+                    <span>Dark</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTheme('system')}
+                    className={`flex items-center justify-center gap-1.5 py-1 px-1.5 rounded-md text-[11px] transition-colors ${
+                      theme === 'system'
+                        ? 'bg-[var(--popover-bg)] text-[var(--text)] shadow-xs font-medium'
+                        : 'text-[var(--secondary)] hover:text-[var(--text)]'
+                    }`}
+                  >
+                    <Laptop size={12} />
+                    <span>Auto</span>
+                  </button>
+                </div>
+
+                <div className="h-px bg-[var(--border)] my-1" />
+
+                {/* Keyboard Shortcuts Trigger */}
                 <button
                   type="button"
-                  onClick={() => setTheme('light')}
-                  aria-label="Light mode"
-                  className={`p-1.5 rounded-md transition-colors ${
-                    theme === 'light'
-                      ? 'bg-[var(--surface-active)] text-[var(--text)]'
-                      : 'text-[var(--muted)] hover:text-[var(--text)]'
-                  }`}
+                  onClick={() => {
+                    setAccountMenuOpen(false);
+                    setShortcutsModalOpen(true);
+                  }}
+                  className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-left text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
                 >
-                  <Sun size={13} />
+                  <Keyboard size={13} className="text-[var(--secondary)]" />
+                  <span>Keyboard shortcuts</span>
                 </button>
+
+                {/* About Astor Trigger */}
                 <button
                   type="button"
-                  onClick={() => setTheme('dark')}
-                  aria-label="Dark mode"
-                  className={`p-1.5 rounded-md transition-colors ${
-                    theme === 'dark'
-                      ? 'bg-[var(--surface-active)] text-[var(--text)]'
-                      : 'text-[var(--muted)] hover:text-[var(--text)]'
-                  }`}
+                  onClick={() => {
+                    setAccountMenuOpen(false);
+                    setAboutModalOpen(true);
+                  }}
+                  className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-left text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
                 >
-                  <Moon size={13} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTheme('system')}
-                  aria-label="System mode"
-                  className={`p-1.5 rounded-md transition-colors ${
-                    theme === 'system'
-                      ? 'bg-[var(--surface-active)] text-[var(--text)]'
-                      : 'text-[var(--muted)] hover:text-[var(--text)]'
-                  }`}
-                >
-                  <Laptop size={13} />
+                  <Info size={13} className="text-[var(--secondary)]" />
+                  <span>About Astor</span>
                 </button>
               </div>
-            </div>
-          ) : (
+            )}
+
+            {/* Account Row */}
             <button
               type="button"
-              onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
-              aria-label="Toggle theme"
-              className="w-full flex items-center justify-center py-2 text-[var(--muted)] hover:text-[var(--text)] transition-colors"
+              onClick={() => setAccountMenuOpen((v) => !v)}
+              className="flex items-center justify-between w-full p-2 rounded-lg hover:bg-[var(--hover)] transition-colors text-left"
+              aria-label="Account menu"
             >
-              {resolvedTheme === 'dark' ? <Moon size={16} /> : <Sun size={16} />}
+              <div className="flex items-center gap-2.5">
+                <div className="w-6 h-6 rounded-full bg-[var(--text)] text-[var(--bg)] font-sans text-xs font-medium flex items-center justify-center">
+                  H
+                </div>
+                <span className="text-[13px] font-medium text-[var(--text)]">
+                  Hardik
+                </span>
+              </div>
+              <ChevronDown size={14} className="text-[var(--secondary)]" />
             </button>
-          )}
+          </div>
         </div>
       </aside>
+
+      {/* Search Modal */}
+      <SearchModal isOpen={searchOpen} onClose={() => setSearchOpen(false)} />
+
+      {/* Keyboard Shortcuts Modal */}
+      {shortcutsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="fixed inset-0 bg-black/40 backdrop-blur-xs"
+            onClick={() => setShortcutsModalOpen(false)}
+          />
+          <div className="relative w-full max-w-[440px] rounded-[16px] border border-[var(--border)] bg-[var(--popover-bg)] p-5 shadow-2xl space-y-4 animate-popover z-10">
+            <div className="flex items-center justify-between border-b border-[var(--border)] pb-3">
+              <h3 className="font-serif text-lg font-medium">Keyboard Shortcuts</h3>
+              <button
+                type="button"
+                onClick={() => setShortcutsModalOpen(false)}
+                className="p-1 rounded text-[var(--secondary)] hover:text-[var(--text)]"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="space-y-2.5 text-xs">
+              <div className="flex items-center justify-between py-1 border-b border-[var(--border-subtle)]">
+                <span className="text-[var(--secondary)]">Search conversations</span>
+                <kbd className="px-2 py-0.5 rounded border border-[var(--border)] bg-[var(--hover)] font-mono">
+                  Ctrl + K
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1 border-b border-[var(--border-subtle)]">
+                <span className="text-[var(--secondary)]">Start new chat</span>
+                <kbd className="px-2 py-0.5 rounded border border-[var(--border)] bg-[var(--hover)] font-mono">
+                  Ctrl + Shift + O
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1 border-b border-[var(--border-subtle)]">
+                <span className="text-[var(--secondary)]">Toggle sidebar</span>
+                <kbd className="px-2 py-0.5 rounded border border-[var(--border)] bg-[var(--hover)] font-mono">
+                  Ctrl + B
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1 border-b border-[var(--border-subtle)]">
+                <span className="text-[var(--secondary)]">Send message</span>
+                <kbd className="px-2 py-0.5 rounded border border-[var(--border)] bg-[var(--hover)] font-mono">
+                  Enter
+                </kbd>
+              </div>
+              <div className="flex items-center justify-between py-1">
+                <span className="text-[var(--secondary)]">New line in composer</span>
+                <kbd className="px-2 py-0.5 rounded border border-[var(--border)] bg-[var(--hover)] font-mono">
+                  Shift + Enter
+                </kbd>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* About Astor Modal */}
+      {aboutModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="fixed inset-0 bg-black/40 backdrop-blur-xs"
+            onClick={() => setAboutModalOpen(false)}
+          />
+          <div className="relative w-full max-w-[420px] rounded-[16px] border border-[var(--border)] bg-[var(--popover-bg)] p-6 shadow-2xl space-y-4 animate-popover z-10 text-center">
+            <div className="flex flex-col items-center space-y-2">
+              <AstorMark size={32} />
+              <h3 className="font-serif text-2xl font-medium tracking-tight">Astor</h3>
+              <p className="text-xs text-[var(--secondary)]">Milestone 1b · Claude Monochrome Edition</p>
+            </div>
+            <div className="text-xs leading-relaxed text-[var(--secondary)] py-2 border-y border-[var(--border)] space-y-2 text-left">
+              <p>
+                Astor is an elegant, thoughtful AI chat assistant crafted with a strict black-and-white aesthetic inspired by Claude.ai.
+              </p>
+              <div className="flex justify-between py-1 font-mono text-[11px]">
+                <span>Default Model</span>
+                <span className="text-[var(--text)]">Muse Spark (muse-spark-1.3)</span>
+              </div>
+              <div className="flex justify-between py-1 font-mono text-[11px]">
+                <span>Persistence</span>
+                <span className="text-[var(--text)]">SQLite WAL (node:sqlite)</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAboutModalOpen(false)}
+              className="w-full py-2 rounded-lg bg-[var(--text)] text-[var(--bg)] text-xs font-medium hover:opacity-90 transition-opacity"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

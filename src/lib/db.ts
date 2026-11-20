@@ -21,6 +21,13 @@ export interface ConversationWithMessages extends Conversation {
   messages: Message[];
 }
 
+export interface SearchResult {
+  id: string;
+  title: string;
+  snippet?: string | null;
+  updated_at: string;
+}
+
 let dbInstance: DatabaseSync | null = null;
 
 export function getDb(): DatabaseSync {
@@ -155,4 +162,36 @@ export function deleteConversation(id: string): boolean {
   const stmt = db.prepare('DELETE FROM conversations WHERE id = ?');
   stmt.run(id);
   return true;
+}
+
+/**
+ * Search conversation titles and message content using SQLite LIKE.
+ */
+export function searchConversations(query: string): SearchResult[] {
+  const clean = query.trim();
+  if (!clean) return [];
+
+  const db = getDb();
+  const searchPattern = `%${clean}%`;
+
+  const stmt = db.prepare(`
+    SELECT DISTINCT
+      c.id,
+      c.title,
+      c.updated_at,
+      (
+        SELECT m.content 
+        FROM messages m 
+        WHERE m.conversation_id = c.id AND m.content LIKE ? 
+        ORDER BY m.created_at ASC 
+        LIMIT 1
+      ) AS snippet
+    FROM conversations c
+    LEFT JOIN messages m ON m.conversation_id = c.id
+    WHERE c.title LIKE ? OR m.content LIKE ?
+    ORDER BY c.updated_at DESC
+    LIMIT 25
+  `);
+
+  return stmt.all(searchPattern, searchPattern, searchPattern) as unknown as SearchResult[];
 }

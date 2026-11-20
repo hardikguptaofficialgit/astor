@@ -20,9 +20,15 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     try {
-      const saved = localStorage.getItem('astor_theme') as Theme | null;
-      if (saved && (saved === 'light' || saved === 'dark' || saved === 'system')) {
-        setThemeState(saved);
+      const params = new URLSearchParams(window.location.search);
+      const queryTheme = params.get('theme') as Theme | null;
+      if (queryTheme && (queryTheme === 'light' || queryTheme === 'dark' || queryTheme === 'system')) {
+        setThemeState(queryTheme);
+      } else {
+        const saved = localStorage.getItem('astor_theme') as Theme | null;
+        if (saved && (saved === 'light' || saved === 'dark' || saved === 'system')) {
+          setThemeState(saved);
+        }
       }
     } catch {}
     setMounted(true);
