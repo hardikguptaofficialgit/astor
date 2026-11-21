@@ -19,12 +19,15 @@ import {
   NumberedSource,
   getNextMessageSeq,
   getUserMemories,
+  saveUserMemory,
 } from '../db';
 import { getNowIST } from '../utils/date';
 import { routeUserMessage, RouteResult } from './router';
 import { recallPastTurns, RecallResult } from '../memory/recall';
 import { buildReplayMessages } from '../history/replay';
 import { getSupermemoryClient } from '../memory/supermemory';
+import { extractUserFacts, isDuplicateMemory, ExtractedFact } from '../memory/extractor';
+import { rankUserMemories } from '../memory/ranking';
 
 export interface RunTurnOptions {
   conversationId: string;
@@ -103,17 +106,38 @@ export async function runTurn({
       ? 'recall'
       : 'normal';
 
-  // Build user personalization & memory context if userId is available
-  let userContext: string | undefined;
-  if (userId) {
+  // Autonomous Memory Extraction: scan user turn for personal facts, tech stack, preferences
+  const effectiveUserId = userId || 'guest_local';
+  const newlyExtractedFacts: ExtractedFact[] = [];
+  if (memory) {
     try {
-      const memories = getUserMemories(userId);
-      const memoryLines: string[] = [];
-      if (memories.length > 0) {
-        memoryLines.push(`Known user facts & preferences:\n${memories.slice(0, 10).map((m) => `- ${m.fact}`).join('\n')}`);
+      const candidates = extractUserFacts(userText);
+      if (candidates.length > 0) {
+        const existingFacts = getUserMemories(effectiveUserId).map((m) => m.fact);
+        for (const candidate of candidates) {
+          if (!isDuplicateMemory(candidate.fact, existingFacts)) {
+            newlyExtractedFacts.push(candidate);
+            existingFacts.push(candidate.fact);
+            const memId = crypto.randomUUID();
+            saveUserMemory(memId, effectiveUserId, candidate.fact, candidate.category);
+            // Async sync to Supermemory
+            getSupermemoryClient().addFact(effectiveUserId, candidate.fact, candidate.category).catch(() => {});
+          }
+        }
       }
-      if (memoryLines.length > 0) {
-        userContext = memoryLines.join('\n\n');
+    } catch {
+      // Fail-open
+    }
+  }
+
+  // Build smart user personalization & memory context ranked by relevance to this query
+  let userContext: string | undefined;
+  if (memory) {
+    try {
+      const allMemories = getUserMemories(effectiveUserId);
+      const ranked = rankUserMemories(allMemories, userText);
+      if (ranked.contextXml) {
+        userContext = ranked.contextXml;
       }
     } catch {
       // Fail-open on memory lookup
@@ -233,6 +257,12 @@ export async function runTurn({
           data: { turns: recallResult.recalledTurns },
         });
       }
+      if (newlyExtractedFacts.length > 0) {
+        savedParts.push({
+          type: 'data-memory-updated',
+          data: { facts: newlyExtractedFacts.map((f) => f.fact) },
+        });
+      }
 
       // Persist assistant message in SQLite
       saveMessage(
@@ -307,6 +337,14 @@ export async function runTurn({
                 data: { turns: recallResult.recalledTurns },
               });
             }
+          }
+
+          if (newlyExtractedFacts.length > 0) {
+            const writeChunk = writer.write as (chunk: unknown) => void;
+            writeChunk({
+              type: 'data-memory-updated',
+              data: { facts: newlyExtractedFacts.map((f) => f.fact) },
+            });
           }
 
           writer.merge(

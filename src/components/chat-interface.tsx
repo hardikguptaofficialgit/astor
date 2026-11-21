@@ -111,6 +111,21 @@ function getRecalledTurns(message: UIMessage): RecalledTurn[] {
   return [];
 }
 
+function getUpdatedMemories(message: UIMessage): string[] {
+  if (!message.parts || !Array.isArray(message.parts)) return [];
+  const facts: string[] = [];
+  for (const part of message.parts) {
+    const p = part as Record<string, unknown>;
+    if (p.type === 'data-memory-updated' && p.data && typeof p.data === 'object') {
+      const dataObj = p.data as { facts?: string[] };
+      if (Array.isArray(dataObj.facts)) {
+        facts.push(...dataObj.facts);
+      }
+    }
+  }
+  return facts;
+}
+
 function formatDisplayDate(dateStr?: string | null): string {
   if (!dateStr) return '';
   try {
@@ -1399,6 +1414,7 @@ export function ChatInterface({
                 const currentThumbs = thumbsState[message.id];
                 const { isSearching, queries, sources } = getWebSearchState(message);
                 const recalledTurns = getRecalledTurns(message);
+                const updatedMemories = getUpdatedMemories(message);
                 const sourcesMap = new Map(sources.map((s) => [s.n, s]));
                 const processedText = linkifyCitations(text, sourcesMap);
 
@@ -1502,6 +1518,22 @@ export function ChatInterface({
                             </a>
                           ))}
                         </div>
+                      </div>
+                    )}
+
+                    {/* Memory Updated Badge (ChatGPT style) */}
+                    {updatedMemories.length > 0 && (
+                      <div className="flex flex-wrap gap-2 pt-1 pb-1">
+                        {updatedMemories.map((fact, idx) => (
+                          <div
+                            key={idx}
+                            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-[var(--border)] bg-[var(--hover)]/40 text-xs font-sans text-[var(--text)] animate-popover shadow-2xs"
+                          >
+                            <Sparkles size={12} className="text-amber-500 shrink-0" />
+                            <span className="font-medium text-[var(--secondary)]">Memory updated:</span>
+                            <span className="text-[var(--text)]">{fact}</span>
+                          </div>
+                        ))}
                       </div>
                     )}
 
