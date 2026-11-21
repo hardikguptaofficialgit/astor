@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import { getConversationById } from '@/lib/db';
+import { getCurrentUser } from '@/lib/auth/session';
 import { ChatInterface } from '@/components/chat-interface';
 import { UIMessage } from 'ai';
 
@@ -11,7 +12,8 @@ export default async function ConversationPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const conversation = getConversationById(id);
+  const user = await getCurrentUser();
+  const conversation = getConversationById(id, user?.id);
 
   if (!conversation) {
     notFound();
@@ -20,13 +22,17 @@ export default async function ConversationPage({
   const initialMessages: UIMessage[] = conversation.messages.map((m) => {
     const parts: UIMessage['parts'] = [{ type: 'text', text: m.content }];
 
-    // Restore saved parts from parts_json (e.g. data-recall)
+    // Restore saved parts from parts_json (e.g. data-recall, image, file)
     if (m.parts_json) {
       try {
         const saved = JSON.parse(m.parts_json);
         if (Array.isArray(saved)) {
           for (const p of saved) {
-            if (p && typeof p === 'object' && p.type === 'data-recall') {
+            if (
+              p &&
+              typeof p === 'object' &&
+              (p.type === 'data-recall' || p.type === 'image' || p.type === 'file')
+            ) {
               parts.push(p as UIMessage['parts'][number]);
             }
           }

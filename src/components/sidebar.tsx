@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import {
@@ -18,17 +18,17 @@ import {
   Keyboard,
   Info,
   ChevronDown,
+  Pin,
+  PinOff,
+  LogIn,
+  LogOut,
 } from 'lucide-react';
 import { AstorMark } from './astor-mark';
 import { useTheme } from './theme-provider';
 import { SearchModal } from './search-modal';
+import { groupConversations, ConversationItem } from './sidebar-groups';
 
-export interface ConversationItem {
-  id: string;
-  title: string;
-  created_at: string;
-  updated_at: string;
-}
+export type { ConversationItem };
 
 interface SidebarProps {
   currentId?: string;
@@ -50,6 +50,7 @@ export function Sidebar({
   const { theme, setTheme } = useTheme();
 
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
+  const [currentUser, setCurrentUser] = useState<{ id: string; email: string; name: string } | null>(null);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
@@ -62,6 +63,21 @@ export function Sidebar({
   const accountMenuRef = useRef<HTMLDivElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
 
+  // Close mobile sidebar when navigating
+  const handleNavClick = () => {
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      onToggle();
+    }
+  };
+
+  // Fetch current user
+  useEffect(() => {
+    fetch('/api/auth/me')
+      .then((r) => r.json())
+      .then((d) => setCurrentUser(d.user || null))
+      .catch(() => {});
+  }, [pathname]);
+
   // Fetch conversations from server
   const fetchConversations = useCallback(async () => {
     try {
@@ -72,6 +88,42 @@ export function Sidebar({
       }
     } catch {}
   }, []);
+
+  const handleTogglePin = async (
+    convId: string,
+    currentPinned: boolean,
+    e: React.MouseEvent
+  ) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setActiveMenuId(null);
+
+    const newPinnedAt = !currentPinned ? new Date().toISOString() : null;
+    setConversations((prev) =>
+      prev.map((c) => (c.id === convId ? { ...c, pinned_at: newPinnedAt } : c))
+    );
+
+    try {
+      await fetch(`/api/conversations/${convId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinned: !currentPinned }),
+      });
+      fetchConversations();
+    } catch {}
+  };
+
+  const handleLogout = async () => {
+    setAccountMenuOpen(false);
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      setCurrentUser(null);
+      router.refresh();
+      fetchConversations();
+    } catch {}
+  };
+
+  const groups = useMemo(() => groupConversations(conversations), [conversations]);
 
   useEffect(() => {
     fetchConversations();
@@ -270,6 +322,7 @@ export function Sidebar({
             {/* New chat pill highlight */}
             <Link
               href="/"
+              onClick={handleNavClick}
               className="group/new flex items-center justify-between w-full h-9 px-2.5 rounded-lg bg-[var(--hover)] hover:opacity-90 text-[var(--text)] text-[13.5px] font-medium transition-all"
               aria-label="New chat"
             >
@@ -299,129 +352,170 @@ export function Sidebar({
             </button>
           </div>
 
-          {/* Recents Section Header */}
-          <div className="px-4 pt-4 pb-1.5 flex items-center justify-between shrink-0">
-            <span className="text-[12px] font-medium text-[var(--secondary)]">
-              Recents
-            </span>
-          </div>
-
-          {/* Conversations List */}
-          <div className="flex-1 overflow-y-auto px-2 py-0.5 space-y-0.5">
-            {conversations.length === 0 ? (
-              <div className="px-3 py-6 text-center text-[12px] text-[var(--secondary)]">
+          {/* Conversations List Grouped by Date & Pinned */}
+          <div className="flex-1 overflow-y-auto px-2 py-0.5 space-y-3">
+            {groups.length === 0 ? (
+              <div className="px-3 py-8 text-center text-[12px] text-[var(--secondary)]">
                 No recent conversations
               </div>
             ) : (
-              conversations.map((conv) => {
-                const isActive = currentId === conv.id;
-                const isEditing = editingId === conv.id;
-
-                if (isEditing) {
-                  return (
-                    <div
-                      key={conv.id}
-                      className="flex items-center gap-1 px-2.5 h-8 bg-[var(--hover)] rounded-lg"
-                    >
-                      <input
-                        ref={editInputRef}
-                        type="text"
-                        value={editingTitle}
-                        onChange={(e) => setEditingTitle(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') handleSaveRename(conv.id);
-                          if (e.key === 'Escape') setEditingId(null);
-                        }}
-                        className="w-full text-[13px] bg-transparent text-[var(--text)] focus:outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleSaveRename(conv.id)}
-                        className="p-1 text-[var(--text)] hover:opacity-70"
-                        aria-label="Save title"
-                      >
-                        <Check size={13} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditingId(null)}
-                        className="p-1 text-[var(--secondary)] hover:opacity-70"
-                        aria-label="Cancel rename"
-                      >
-                        <X size={13} />
-                      </button>
-                    </div>
-                  );
-                }
-
-                return (
-                  <div
-                    key={conv.id}
-                    className={`group/row relative flex items-center justify-between h-8 px-2.5 rounded-lg text-[13.5px] transition-colors ${
-                      isActive
-                        ? 'bg-[var(--hover)] font-medium text-[var(--text)]'
-                        : 'text-[var(--text)] hover:bg-[var(--hover)]'
-                    }`}
-                  >
-                    <Link
-                      href={`/c/${conv.id}`}
-                      className="truncate flex-1 pr-2 text-left"
-                      title={conv.title}
-                    >
-                      {conv.title}
-                    </Link>
-
-                    {/* Options Button "..." on hover */}
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        setActiveMenuId(activeMenuId === conv.id ? null : conv.id);
-                      }}
-                      aria-label="Conversation options"
-                      className={`p-1 rounded-md text-[var(--secondary)] hover:text-[var(--text)] transition-opacity ${
-                        activeMenuId === conv.id
-                          ? 'opacity-100 bg-[var(--border)]'
-                          : 'opacity-0 group-hover/row:opacity-100'
-                      }`}
-                    >
-                      <MoreHorizontal size={14} />
-                    </button>
-
-                    {/* Options Popover Menu */}
-                    {activeMenuId === conv.id && (
-                      <div
-                        ref={menuRef}
-                        className="absolute right-2 top-8 z-50 w-36 py-1 rounded-[12px] border border-[var(--border)] bg-[var(--popover-bg)] shadow-xl text-xs animate-popover"
-                      >
-                        <button
-                          type="button"
-                          onClick={(e) => handleStartRename(conv, e)}
-                          className="flex items-center justify-between w-full px-3 py-1.5 text-left text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
-                        >
-                          <div className="flex items-center gap-2">
-                            <Pencil size={13} />
-                            <span>Rename</span>
-                          </div>
-                          <span className="text-[10px] text-[var(--secondary)] font-mono">R</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => handleDelete(conv.id, e)}
-                          className="flex items-center justify-between w-full px-3 py-1.5 text-left text-red-600 dark:text-red-400 hover:bg-[var(--hover)] transition-colors"
-                        >
-                          <div className="flex items-center gap-2">
-                            <Trash2 size={13} />
-                            <span>Delete</span>
-                          </div>
-                          <span className="text-[10px] text-red-500/80 font-mono">D</span>
-                        </button>
-                      </div>
+              groups.map((group) => (
+                <div key={group.label} className="space-y-0.5">
+                  <div className="px-2.5 pt-2 pb-1 flex items-center justify-between text-[11px] font-medium text-[var(--secondary)] uppercase tracking-wider select-none">
+                    <span>{group.label}</span>
+                    {group.label === 'Pinned' && (
+                      <Pin size={11} className="text-[var(--secondary)] opacity-70" />
                     )}
                   </div>
-                );
-              })
+                  {group.items.map((conv) => {
+                    const isActive = currentId === conv.id;
+                    const isEditing = editingId === conv.id;
+
+                    if (isEditing) {
+                      return (
+                        <div
+                          key={conv.id}
+                          className="flex items-center gap-1 px-2.5 h-8 bg-[var(--hover)] rounded-lg"
+                        >
+                          <input
+                            ref={editInputRef}
+                            type="text"
+                            value={editingTitle}
+                            onChange={(e) => setEditingTitle(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSaveRename(conv.id);
+                              if (e.key === 'Escape') setEditingId(null);
+                            }}
+                            className="w-full text-[13px] bg-transparent text-[var(--text)] focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleSaveRename(conv.id)}
+                            className="p-1 text-[var(--text)] hover:opacity-70"
+                            aria-label="Save title"
+                          >
+                            <Check size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingId(null)}
+                            className="p-1 text-[var(--secondary)] hover:opacity-70"
+                            aria-label="Cancel rename"
+                          >
+                            <X size={13} />
+                          </button>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div
+                        key={conv.id}
+                        className={`group/row relative flex items-center justify-between h-8 px-2.5 rounded-lg text-[13.5px] transition-colors ${
+                          isActive
+                            ? 'bg-[var(--hover)] font-medium text-[var(--text)]'
+                            : 'text-[var(--text)] hover:bg-[var(--hover)]'
+                        }`}
+                      >
+                        <Link
+                          href={`/c/${conv.id}`}
+                          onClick={handleNavClick}
+                          className="truncate flex-1 pr-2 text-left flex items-center gap-1.5"
+                          title={conv.title}
+                        >
+                          {conv.pinned_at && (
+                            <Pin size={10} className="text-[var(--secondary)] shrink-0 opacity-70 rotate-45" />
+                          )}
+                          <span className="truncate">{conv.title}</span>
+                        </Link>
+
+                        {/* Quick Action Buttons on hover */}
+                        <div className="flex items-center gap-0.5">
+                          {/* 1-click Pin / Unpin button */}
+                          <button
+                            type="button"
+                            onClick={(e) => handleTogglePin(conv.id, Boolean(conv.pinned_at), e)}
+                            aria-label={conv.pinned_at ? 'Unpin chat' : 'Pin chat'}
+                            title={conv.pinned_at ? 'Unpin chat' : 'Pin chat'}
+                            className={`p-1 rounded-md text-[var(--secondary)] hover:text-[var(--text)] transition-all ${
+                              conv.pinned_at
+                                ? 'opacity-80 hover:opacity-100 text-[var(--text)]'
+                                : 'opacity-0 group-hover/row:opacity-100'
+                            }`}
+                          >
+                            <Pin
+                              size={13}
+                              className={`transition-transform ${
+                                conv.pinned_at ? 'fill-current rotate-45' : 'hover:scale-110'
+                              }`}
+                            />
+                          </button>
+
+                          {/* Options Button "..." on hover */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              setActiveMenuId(activeMenuId === conv.id ? null : conv.id);
+                            }}
+                            aria-label="Conversation options"
+                            className={`p-1 rounded-md text-[var(--secondary)] hover:text-[var(--text)] transition-opacity ${
+                              activeMenuId === conv.id
+                                ? 'opacity-100 bg-[var(--border)]'
+                                : 'opacity-0 group-hover/row:opacity-100'
+                            }`}
+                          >
+                            <MoreHorizontal size={14} />
+                          </button>
+                        </div>
+
+                        {/* Options Popover Menu */}
+                        {activeMenuId === conv.id && (
+                          <div
+                            ref={menuRef}
+                            className="absolute right-2 top-8 z-50 w-36 py-1 rounded-[12px] border border-[var(--border)] bg-[var(--popover-bg)] shadow-xl text-xs animate-popover"
+                          >
+                            <button
+                              type="button"
+                              onClick={(e) => handleTogglePin(conv.id, Boolean(conv.pinned_at), e)}
+                              className="flex items-center justify-between w-full px-3 py-1.5 text-left text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                            >
+                              <div className="flex items-center gap-2">
+                                {conv.pinned_at ? <PinOff size={13} /> : <Pin size={13} />}
+                                <span>{conv.pinned_at ? 'Unpin' : 'Pin chat'}</span>
+                              </div>
+                              <span className="text-[10px] text-[var(--secondary)] font-mono">P</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleStartRename(conv, e)}
+                              className="flex items-center justify-between w-full px-3 py-1.5 text-left text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                            >
+                              <div className="flex items-center gap-2">
+                                <Pencil size={13} />
+                                <span>Rename</span>
+                              </div>
+                              <span className="text-[10px] text-[var(--secondary)] font-mono">R</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleDelete(conv.id, e)}
+                              className="flex items-center justify-between w-full px-3 py-1.5 text-left text-red-600 dark:text-red-400 hover:bg-[var(--hover)] transition-colors"
+                            >
+                              <div className="flex items-center gap-2">
+                                <Trash2 size={13} />
+                                <span>Delete</span>
+                              </div>
+                              <span className="text-[10px] text-red-500/80 font-mono">D</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))
             )}
           </div>
 
@@ -433,9 +527,20 @@ export function Sidebar({
                 ref={accountMenuRef}
                 className="absolute left-2 right-2 bottom-full mb-2 p-1.5 rounded-[12px] border border-[var(--border)] bg-[var(--popover-bg)] shadow-xl text-xs space-y-1 animate-popover z-50"
               >
-                <div className="px-2.5 py-1 flex items-center justify-between">
-                  <span className="text-[11px] font-medium text-[var(--text)]">Hardik</span>
-                  <span className="text-[10px] text-[var(--secondary)]">Free plan</span>
+                <div className="px-2.5 py-1.5 flex flex-col min-w-0">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[12px] font-medium text-[var(--text)] truncate">
+                      {currentUser?.name || 'Hardik'}
+                    </span>
+                    <span className="text-[10px] text-[var(--secondary)] font-mono">
+                      {currentUser ? 'Member' : 'Local'}
+                    </span>
+                  </div>
+                  {currentUser?.email && (
+                    <span className="text-[10.5px] text-[var(--secondary)] truncate">
+                      {currentUser.email}
+                    </span>
+                  )}
                 </div>
                 <div className="h-px bg-[var(--border)] my-1" />
 
@@ -509,6 +614,28 @@ export function Sidebar({
                   <Info size={13} className="text-[var(--secondary)]" />
                   <span>About Astor</span>
                 </button>
+
+                <div className="h-px bg-[var(--border)] my-1" />
+
+                {currentUser ? (
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-left text-red-500 hover:bg-red-500/10 transition-colors font-medium"
+                  >
+                    <LogOut size={13} />
+                    <span>Sign out</span>
+                  </button>
+                ) : (
+                  <Link
+                    href="/login"
+                    onClick={() => setAccountMenuOpen(false)}
+                    className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-left text-[var(--text)] hover:bg-[var(--hover)] font-medium transition-colors"
+                  >
+                    <LogIn size={13} className="text-[var(--secondary)]" />
+                    <span>Sign in / Register</span>
+                  </Link>
+                )}
               </div>
             )}
 
@@ -521,14 +648,14 @@ export function Sidebar({
             >
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-7 h-7 rounded-full bg-[var(--text)] text-[var(--bg)] font-sans text-xs font-medium flex items-center justify-center shrink-0">
-                  H
+                  {(currentUser?.name || 'A')[0].toUpperCase()}
                 </div>
                 <div className="flex flex-col text-left min-w-0 leading-tight">
                   <span className="text-[13px] font-medium text-[var(--text)] truncate">
-                    Hardik
+                    {currentUser?.name || 'Guest user'}
                   </span>
                   <span className="text-[11px] text-[var(--secondary)]">
-                    Free plan
+                    {currentUser ? 'Astor Member' : 'Local storage'}
                   </span>
                 </div>
               </div>

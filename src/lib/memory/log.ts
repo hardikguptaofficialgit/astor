@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 
 export interface Conversation {
   id: string;
@@ -9,6 +10,8 @@ export interface Conversation {
   updated_at: string;
   summary?: string | null;
   summary_upto_seq?: number | null;
+  user_id?: string | null;
+  pinned_at?: string | null;
 }
 
 export interface NumberedSource {
@@ -42,6 +45,7 @@ export interface Message {
   tokens_reasoning?: number | null;
   tavily_credits?: number | null;
   sources?: NumberedSource[];
+  feedback?: 'up' | 'down' | null;
 }
 
 export interface ConversationWithMessages extends Conversation {
@@ -81,17 +85,48 @@ function safeAddColumn(db: DatabaseSync, table: string, colDef: string) {
   }
 }
 
+function resolveDbPath(customPath?: string): string {
+  if (customPath) return customPath;
+  if (process.env.ASTOR_DB_PATH) {
+    const envPath = process.env.ASTOR_DB_PATH;
+    const envDir = path.dirname(envPath);
+    if (!fs.existsSync(envDir)) {
+      try {
+        fs.mkdirSync(envDir, { recursive: true });
+      } catch {
+        // ignore or fallback to tmp
+      }
+    }
+    return envPath;
+  }
+
+  const standardPath = path.join(path.resolve(process.cwd(), 'data'), 'astor.db');
+  const dataDir = path.dirname(standardPath);
+  try {
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    return standardPath;
+  } catch {
+    // Graceful fallback to tmp directory if process.cwd() is read-only (e.g. Cloud Run, Docker non-root)
+    const tmpDir = path.join(os.tmpdir(), 'astor-data');
+    if (!fs.existsSync(tmpDir)) {
+      try {
+        fs.mkdirSync(tmpDir, { recursive: true });
+      } catch {
+        return path.join(os.tmpdir(), 'astor.db');
+      }
+    }
+    return path.join(tmpDir, 'astor.db');
+  }
+}
+
 export function getDb(customPath?: string): DatabaseSync {
   if (dbInstance && !customPath) {
     return dbInstance;
   }
 
-  const dbPath = customPath || path.join(path.resolve(process.cwd(), 'data'), 'astor.db');
-  const dataDir = path.dirname(dbPath);
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
-
+  const dbPath = resolveDbPath(customPath);
   const db = new DatabaseSync(dbPath);
 
   // WAL mode for write/read concurrency, foreign keys, and busy timeout
@@ -106,7 +141,8 @@ export function getDb(customPath?: string): DatabaseSync {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       summary TEXT,
-      summary_upto_seq INTEGER
+      summary_upto_seq INTEGER,
+      user_id TEXT
     );
 
     CREATE TABLE IF NOT EXISTS messages (
@@ -182,6 +218,12 @@ export function getDb(customPath?: string): DatabaseSync {
   // Migrate existing tables safely
   safeAddColumn(db, 'conversations', 'summary TEXT');
   safeAddColumn(db, 'conversations', 'summary_upto_seq INTEGER');
+  safeAddColumn(db, 'conversations', 'user_id TEXT');
+  safeAddColumn(db, 'conversations', 'pinned_at TEXT');
+
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id);');
+  } catch {}
 
   safeAddColumn(db, 'messages', 'parts_json TEXT');
   safeAddColumn(db, 'messages', 'model_text TEXT');
@@ -195,6 +237,7 @@ export function getDb(customPath?: string): DatabaseSync {
   safeAddColumn(db, 'messages', 'tokens_reasoning INTEGER');
   safeAddColumn(db, 'messages', 'tavily_credits INTEGER');
   safeAddColumn(db, 'messages', 'text TEXT');
+  safeAddColumn(db, 'messages', 'feedback TEXT');
 
   // Backfill text <-> content to ensure both are populated
   try {
@@ -231,8 +274,9 @@ export function getDb(customPath?: string): DatabaseSync {
     if ((countRow?.count ?? 0) === 0 && (msgCountRow?.count ?? 0) > 0) {
       db.exec("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');");
     }
-  } catch (err) {
-    console.error('Error setting up FTS5:', err);
+  } catch {
+    // FTS5 extension is not available in this SQLite build (e.g. Windows Node 22 node:sqlite).
+    // searchMessagesFTS will automatically fall back to deterministic LIKE queries.
   }
 
   if (!customPath) {
@@ -257,6 +301,8 @@ function toConversation(row: Record<string, unknown>): Conversation {
     updated_at: row.updated_at as string,
     summary: (row.summary as string | null) ?? null,
     summary_upto_seq: (row.summary_upto_seq as number | null) ?? null,
+    user_id: (row.user_id as string | null) ?? null,
+    pinned_at: (row.pinned_at as string | null) ?? null,
   };
 }
 
@@ -295,6 +341,7 @@ function toMessage(row: Record<string, unknown>, sources?: NumberedSource[]): Me
     tokens_reasoning: (row.tokens_reasoning as number | null) ?? null,
     tavily_credits: (row.tavily_credits as number | null) ?? null,
     sources: sources && sources.length > 0 ? sources : undefined,
+    feedback: (row.feedback as 'up' | 'down' | null) ?? null,
   };
 }
 
@@ -315,24 +362,53 @@ function toSearchCache(row: Record<string, unknown>): { results_json: string; fe
   };
 }
 
-export function getAllConversations(): Conversation[] {
+export function getAllConversations(userId?: string | null): Conversation[] {
   const db = getDb();
-  const stmt = db.prepare('SELECT id, title, created_at, updated_at, summary, summary_upto_seq FROM conversations ORDER BY updated_at DESC');
+  if (typeof userId === 'string') {
+    const stmt = db.prepare(
+      'SELECT id, title, created_at, updated_at, summary, summary_upto_seq, user_id, pinned_at FROM conversations WHERE user_id = ? ORDER BY updated_at DESC'
+    );
+    const rows = stmt.all(userId) as Record<string, unknown>[];
+    return rows.map(toConversation);
+  }
+  if (userId === null) {
+    const stmt = db.prepare(
+      'SELECT id, title, created_at, updated_at, summary, summary_upto_seq, user_id, pinned_at FROM conversations WHERE user_id IS NULL ORDER BY updated_at DESC'
+    );
+    const rows = stmt.all() as Record<string, unknown>[];
+    return rows.map(toConversation);
+  }
+  const stmt = db.prepare(
+    'SELECT id, title, created_at, updated_at, summary, summary_upto_seq, user_id, pinned_at FROM conversations ORDER BY updated_at DESC'
+  );
   const rows = stmt.all() as Record<string, unknown>[];
   return rows.map(toConversation);
 }
 
-export function getConversationById(id: string): ConversationWithMessages | null {
+export function getConversationById(id: string, userId?: string | null): ConversationWithMessages | null {
   const db = getDb();
-  const convStmt = db.prepare('SELECT id, title, created_at, updated_at, summary, summary_upto_seq FROM conversations WHERE id = ?');
-  const rawConv = convStmt.get(id) as Record<string, unknown> | undefined;
+  let convStmt;
+  let rawConv: Record<string, unknown> | undefined;
+
+  if (typeof userId === 'string') {
+    convStmt = db.prepare(
+      'SELECT id, title, created_at, updated_at, summary, summary_upto_seq, user_id, pinned_at FROM conversations WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+    );
+    rawConv = convStmt.get(id, userId) as Record<string, unknown> | undefined;
+  } else {
+    convStmt = db.prepare(
+      'SELECT id, title, created_at, updated_at, summary, summary_upto_seq, user_id, pinned_at FROM conversations WHERE id = ?'
+    );
+    rawConv = convStmt.get(id) as Record<string, unknown> | undefined;
+  }
+
   if (!rawConv) {
     return null;
   }
   const conv = toConversation(rawConv);
 
   const msgStmt = db.prepare(
-    'SELECT id, conversation_id, role, content, text, created_at, parts_json, model_text, seq, local_date, mode, finish, tokens_in, tokens_cached, tokens_out, tokens_reasoning, tavily_credits FROM messages WHERE conversation_id = ? ORDER BY seq ASC, created_at ASC'
+    'SELECT id, conversation_id, role, content, text, created_at, parts_json, model_text, seq, local_date, mode, finish, tokens_in, tokens_cached, tokens_out, tokens_reasoning, tavily_credits, feedback FROM messages WHERE conversation_id = ? ORDER BY seq ASC, created_at ASC'
   );
   const rawMessages = msgStmt.all(id) as Record<string, unknown>[];
 
@@ -352,12 +428,20 @@ export function getConversationById(id: string): ConversationWithMessages | null
   };
 }
 
-export function createConversation(id: string, title: string, createdAt?: string): Conversation {
+export function createConversation(
+  id: string,
+  title: string,
+  createdAt?: string,
+  userId?: string | null
+): Conversation {
   const db = getDb();
   const now = createdAt || new Date().toISOString();
-  const stmt = db.prepare('INSERT OR REPLACE INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)');
-  stmt.run(id, title, now, now);
-  return { id, title, created_at: now, updated_at: now };
+  const uid = userId ?? null;
+  const stmt = db.prepare(
+    'INSERT OR REPLACE INTO conversations (id, title, created_at, updated_at, user_id) VALUES (?, ?, ?, ?, ?)'
+  );
+  stmt.run(id, title, now, now, uid);
+  return { id, title, created_at: now, updated_at: now, user_id: uid };
 }
 
 export function getNextMessageSeq(conversationId: string): number {
@@ -386,6 +470,7 @@ export function saveMessage(
     tokens_reasoning?: number;
     tavily_credits?: number;
     text?: string;
+    userId?: string | null;
   }
 ): Message {
   const db = getDb();
@@ -395,7 +480,7 @@ export function saveMessage(
   const convStmt = db.prepare('SELECT id FROM conversations WHERE id = ?');
   const existingConv = convStmt.get(conversationId);
   if (!existingConv) {
-    createConversation(conversationId, generateTitle(content), now);
+    createConversation(conversationId, generateTitle(content), now, extra?.userId);
   } else {
     const updateStmt = db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?');
     updateStmt.run(now, conversationId);
@@ -511,29 +596,39 @@ export function setSearchCache(
   stmt.run(key, query, paramsJson, resultsJson, now, ttlS);
 }
 
-export function renameConversation(id: string, title: string): boolean {
+export function renameConversation(id: string, title: string, userId?: string | null): boolean {
   const db = getDb();
   const now = new Date().toISOString();
-  const stmt = db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?');
-  stmt.run(title.trim(), now, id);
+  if (typeof userId === 'string') {
+    const stmt = db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ? AND (user_id = ? OR user_id IS NULL)');
+    stmt.run(title.trim(), now, id, userId);
+  } else {
+    const stmt = db.prepare('UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?');
+    stmt.run(title.trim(), now, id);
+  }
   return true;
 }
 
-export function deleteConversation(id: string): boolean {
+export function deleteConversation(id: string, userId?: string | null): boolean {
   const db = getDb();
-  const stmt = db.prepare('DELETE FROM conversations WHERE id = ?');
-  stmt.run(id);
+  if (typeof userId === 'string') {
+    const stmt = db.prepare('DELETE FROM conversations WHERE id = ? AND (user_id = ? OR user_id IS NULL)');
+    stmt.run(id, userId);
+  } else {
+    const stmt = db.prepare('DELETE FROM conversations WHERE id = ?');
+    stmt.run(id);
+  }
   return true;
 }
 
-export function searchConversations(query: string): SearchResult[] {
+export function searchConversations(query: string, userId?: string | null): SearchResult[] {
   const clean = query.trim();
   if (!clean) return [];
 
   const db = getDb();
   const searchPattern = `%${clean}%`;
 
-  const stmt = db.prepare(`
+  let sql = `
     SELECT DISTINCT
       c.id,
       c.title,
@@ -547,13 +642,104 @@ export function searchConversations(query: string): SearchResult[] {
       ) AS snippet
     FROM conversations c
     LEFT JOIN messages m ON m.conversation_id = c.id
-    WHERE c.title LIKE ? OR m.content LIKE ? OR m.text LIKE ?
-    ORDER BY c.updated_at DESC
-    LIMIT 25
-  `);
+    WHERE (c.title LIKE ? OR m.content LIKE ? OR m.text LIKE ?)
+  `;
+  const params: (string | number | bigint | null | Uint8Array)[] = [
+    searchPattern,
+    searchPattern,
+    searchPattern,
+    searchPattern,
+    searchPattern,
+  ];
 
-  const rows = stmt.all(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern) as Record<string, unknown>[];
+  if (typeof userId === 'string') {
+    sql += ` AND (c.user_id = ? OR c.user_id IS NULL)`;
+    params.push(userId);
+  } else if (userId === null) {
+    sql += ` AND c.user_id IS NULL`;
+  }
+
+  sql += ` ORDER BY c.updated_at DESC LIMIT 25`;
+
+  const stmt = db.prepare(sql);
+  const rows = stmt.all(...params) as Record<string, unknown>[];
   return rows.map(toSearchResult);
+}
+
+/**
+ * Pins or unpins a conversation without modifying its updated_at timestamp.
+ */
+export function setConversationPinned(
+  id: string,
+  pinned: boolean,
+  userId?: string | null
+): boolean {
+  const db = getDb();
+  let checkStmt;
+  if (typeof userId === 'string') {
+    checkStmt = db.prepare(
+      'SELECT id FROM conversations WHERE id = ? AND (user_id = ? OR user_id IS NULL)'
+    );
+  } else {
+    checkStmt = db.prepare('SELECT id FROM conversations WHERE id = ?');
+  }
+  const exists =
+    typeof userId === 'string' ? checkStmt.get(id, userId) : checkStmt.get(id);
+  if (!exists) return false;
+
+  const pinnedAt = pinned ? new Date().toISOString() : null;
+  const stmt = db.prepare('UPDATE conversations SET pinned_at = ? WHERE id = ?');
+  stmt.run(pinnedAt, id);
+  return true;
+}
+
+/**
+ * Sets message feedback ('up', 'down', or null).
+ */
+export function setMessageFeedback(
+  messageId: string,
+  feedback: 'up' | 'down' | null
+): boolean {
+  const db = getDb();
+  const checkStmt = db.prepare('SELECT id FROM messages WHERE id = ?');
+  const exists = checkStmt.get(messageId);
+  if (!exists) return false;
+
+  const stmt = db.prepare('UPDATE messages SET feedback = ? WHERE id = ?');
+  stmt.run(feedback, messageId);
+  return true;
+}
+
+/**
+ * Retrieves a single raw message row by id.
+ */
+export function getMessageRowById(id: string): Message | null {
+  const db = getDb();
+  const stmt = db.prepare(
+    'SELECT id, conversation_id, role, content, text, created_at, parts_json, model_text, seq, local_date, mode, finish, tokens_in, tokens_cached, tokens_out, tokens_reasoning, tavily_credits, feedback FROM messages WHERE id = ?'
+  );
+  const row = stmt.get(id) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return toMessage(row);
+}
+
+/**
+ * Deletes all messages in a conversation with seq strictly greater than the given seq.
+ * Used for regenerate / edit turn cleanup.
+ */
+export function deleteMessagesAfterSeq(conversationId: string, seq: number): number {
+  const db = getDb();
+  const countStmt = db.prepare(
+    'SELECT count(*) as count FROM messages WHERE conversation_id = ? AND seq > ?'
+  );
+  const row = countStmt.get(conversationId, seq) as { count?: number };
+  const count = row?.count ?? 0;
+
+  const delStmt = db.prepare(
+    'DELETE FROM messages WHERE conversation_id = ? AND seq > ?'
+  );
+  delStmt.run(conversationId, seq);
+  return count;
 }
 
 // ==============================================================================
@@ -634,9 +820,63 @@ export function searchMessagesFTS(
       ...toMessage(r),
       rank: Number(r.rank),
     }));
-  } catch (err) {
-    console.error('FTS5 search error:', err);
-    return [];
+  } catch {
+    // Graceful fallback for environments where FTS5 is not compiled (e.g. Windows Node 22 node:sqlite)
+    // Deterministic SQLite LIKE search over messages.content and messages.text joined with conversations
+    const stopWords = new Set([
+      'what', 'did', 'we', 'decide', 'about', 'earlier', 'the', 'a', 'an',
+      'in', 'on', 'at', 'to', 'for', 'of', 'and', 'is', 'are', 'was',
+      'were', 'i', 'me', 'my', 'you', 'your', 'our', 'it', 'its', 'tell',
+      'can', 'please', 'with', 'from', 'as'
+    ]);
+    const salientTerms = terms.filter((t) => !stopWords.has(t.toLowerCase()) && t.length > 1);
+    const searchTerms = salientTerms.length > 0 ? salientTerms : terms;
+
+    const termConditions = searchTerms.map(() => '(m.content LIKE ? OR m.text LIKE ?)');
+    const scoreClauses = searchTerms.map(() => '(CASE WHEN m.content LIKE ? OR m.text LIKE ? THEN 1 ELSE 0 END)');
+
+    let fallbackSql = `
+      SELECT m.id, m.conversation_id, m.seq, m.role, m.created_at, m.local_date, m.text, m.content, m.model_text, m.parts_json, m.mode, m.finish,
+             (${scoreClauses.join(' + ')}) as score
+      FROM messages m
+      JOIN conversations c ON c.id = m.conversation_id
+      WHERE (${termConditions.join(' OR ')})
+    `;
+
+    const scoreParams = searchTerms.flatMap((t) => [`%${t}%`, `%${t}%`]);
+    const conditionParams = searchTerms.flatMap((t) => [`%${t}%`, `%${t}%`]);
+    const fallbackParams: (string | number | bigint | null | Uint8Array)[] = [
+      ...scoreParams,
+      ...conditionParams,
+    ];
+
+    if (options.role) {
+      fallbackSql += ` AND m.role = ?`;
+      fallbackParams.push(options.role);
+    }
+    if (options.from) {
+      fallbackSql += ` AND m.local_date >= ?`;
+      fallbackParams.push(options.from);
+    }
+    if (options.to) {
+      fallbackSql += ` AND m.local_date <= ?`;
+      fallbackParams.push(options.to);
+    }
+
+    fallbackSql += ` ORDER BY score DESC, m.created_at DESC LIMIT ?`;
+    fallbackParams.push(limit);
+
+    try {
+      const stmt = db.prepare(fallbackSql);
+      const rows = stmt.all(...fallbackParams) as (Record<string, unknown> & { score: number })[];
+      return rows.map((r) => ({
+        ...toMessage(r),
+        rank: -Number(r.score || 0),
+      }));
+    } catch (fallbackErr) {
+      console.error('Fallback LIKE search error:', fallbackErr);
+      return [];
+    }
   }
 }
 

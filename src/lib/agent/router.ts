@@ -71,11 +71,13 @@ export function routeUserMessage(
     };
   }
 
-  // 3. Recall: date given OR memory cue present (without reverify)
+  // 3. Recall: memory cue present (with or without date)
   // E.g. "What did I ask you on 3 November?"
   // "On Monday we shortlisted 5 CRM tools"
   // "What did we decide about Postgres earlier?"
-  if (hasDate || hasMemoryCue) {
+  // If only a date/time phrase is given without a personal memory cue (e.g. "What's new in AI this week?"),
+  // it is treated as a general factual search, not personal memory recall.
+  if (hasMemoryCue) {
     // Pure recall: user asks about their history without asking about today/now/verification
     const isPureRecall = !hasReverifyCue;
     return {

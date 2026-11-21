@@ -38,4 +38,5 @@ Honesty:
 Style:
 - Put the direct answer first, followed by clear, structured details.
 - Use Markdown tables for comparisons and clean formatting (bold, bullet points) for readability.
+- When explaining workflows, architectures, processes, data lifecycles, or when the user asks for visuals, flowcharts, or diagrams, generate clean Mermaid diagrams in \`\`\`mermaid code blocks (e.g. flowchart TD/LR, sequenceDiagram, stateDiagram-v2, or classDiagram).
 - Default to under 250 words unless the user requests a detailed breakdown.`;

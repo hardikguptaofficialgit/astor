@@ -10,7 +10,7 @@
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
-    "test": "npx tsx --test src/tests/citations.test.ts src/tests/cache.test.ts src/tests/tool.test.ts src/tests/pipeline.test.ts src/tests/agent.test.ts src/tests/db.test.ts src/tests/date-resolver.test.ts src/tests/recall.test.ts src/tests/replay.test.ts src/tests/router.test.ts src/tests/supermemory.test.ts"
+    "test": "npx tsx --test src/tests/citations.test.ts src/tests/cache.test.ts src/tests/tool.test.ts src/tests/pipeline.test.ts src/tests/agent.test.ts src/tests/db.test.ts src/tests/date-resolver.test.ts src/tests/recall.test.ts src/tests/replay.test.ts src/tests/router.test.ts src/tests/supermemory.test.ts src/tests/auth-scoping.test.ts src/tests/sidebar-groups.test.ts src/tests/pin-feedback.test.ts"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.93",
@@ -18,6 +18,8 @@
     "ai": "^7.0.177",
     "chrono-node": "^2.10.3",
     "lucide-react": "^1.77.0",
+    "mermaid": "^12.3.0",
+    "mongodb": "^7.9.1",
     "next": "15.5.29",
     "react": "^19.1.2",
     "react-dom": "^19.1.2",

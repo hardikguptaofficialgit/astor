@@ -1,5 +1,6 @@
 import { isApiKeyConfigured } from '@/lib/llm/provider';
 import { runTurn } from '@/lib/agent/run-turn';
+import { getCurrentUser } from '@/lib/auth/session';
 import { UIMessage } from 'ai';
 
 export const runtime = 'nodejs';
@@ -18,18 +19,27 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const { id, messages } = body as { id?: string; messages: UIMessage[] };
+    const { id, messages, webSearch, memory } = body as {
+      id?: string;
+      messages: UIMessage[];
+      webSearch?: boolean;
+      memory?: boolean;
+    };
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return new Response('No messages provided', { status: 400 });
     }
 
     const conversationId = id || crypto.randomUUID();
+    const user = await getCurrentUser();
 
     const result = await runTurn({
       conversationId,
       messages,
       signal: req.signal,
+      userId: user?.id,
+      webSearch: webSearch !== false,
+      memory: memory !== false,
     });
 
     return result.toUIMessageStreamResponse({

@@ -1,7 +1,6 @@
 import {
   streamText,
   isStepCount,
-  smoothStream,
   ModelMessage,
   UIMessage,
   toUIMessageStream,
@@ -30,6 +29,9 @@ export interface RunTurnOptions {
   conversationId: string;
   messages: UIMessage[];
   signal?: AbortSignal;
+  userId?: string | null;
+  webSearch?: boolean;
+  memory?: boolean;
 }
 
 /**
@@ -61,7 +63,14 @@ function extractUserText(msg: UIMessage): string {
  * 7. On finish: save assistant reply, persist sources, validate [n] citations.
  *    Fire-and-forget: Supermemory outbox enqueue and background process.
  */
-export async function runTurn({ conversationId, messages, signal }: RunTurnOptions) {
+export async function runTurn({
+  conversationId,
+  messages,
+  signal,
+  userId,
+  webSearch = true,
+  memory = true,
+}: RunTurnOptions) {
   const { localDate: todayDate, formatted: nowFormatted, epochMs } = getNowIST();
 
   // Find latest user message
@@ -78,7 +87,7 @@ export async function runTurn({ conversationId, messages, signal }: RunTurnOptio
   const route: RouteResult = routeUserMessage(userText);
   let recallResult: RecallResult | null = null;
 
-  if (route.label === 'recall' || route.label === 'reverify-cue') {
+  if (memory && (route.label === 'recall' || route.label === 'reverify-cue')) {
     recallResult = await recallPastTurns({
       dateRange: route.dateRange,
       query: userText,
@@ -101,6 +110,24 @@ export async function runTurn({ conversationId, messages, signal }: RunTurnOptio
   });
   const modelUserText = `${userText}${turnContext}`;
 
+  // Extract any image parts attached to the user message
+  const userImageParts: Array<{ type: 'image'; image: string }> = [];
+  if (lastUserMsg.parts && Array.isArray(lastUserMsg.parts)) {
+    for (const p of lastUserMsg.parts) {
+      const part = p as Record<string, unknown>;
+      if (part.type === 'image' && typeof part.image === 'string') {
+        userImageParts.push({ type: 'image', image: part.image });
+      } else if (
+        part.type === 'file' &&
+        typeof part.url === 'string' &&
+        typeof part.mediaType === 'string' &&
+        part.mediaType.startsWith('image/')
+      ) {
+        userImageParts.push({ type: 'image', image: part.url });
+      }
+    }
+  }
+
   // Step 1: Persist user message NOW in SQLite with model_text for stable replay
   saveMessage(userMsgId, conversationId, 'user', userText, new Date().toISOString(), {
     seq: userSeq,
@@ -108,6 +135,8 @@ export async function runTurn({ conversationId, messages, signal }: RunTurnOptio
     mode,
     model_text: modelUserText,
     text: userText,
+    parts_json: lastUserMsg.parts && lastUserMsg.parts.length > 0 ? JSON.stringify(lastUserMsg.parts) : undefined,
+    userId,
   });
 
   // Fetch full conversation history from SQLite for replay
@@ -116,11 +145,16 @@ export async function runTurn({ conversationId, messages, signal }: RunTurnOptio
 
   // Build model messages: replayed history + current user message
   const replayMessages = buildReplayMessages(convMessages, { skipMessageId: userMsgId });
+  const modelUserContent: ModelMessage['content'] =
+    userImageParts.length > 0
+      ? [{ type: 'text', text: modelUserText }, ...userImageParts]
+      : modelUserText;
+
   const modelMessages: ModelMessage[] = [
     ...replayMessages,
     {
       role: 'user',
-      content: modelUserText,
+      content: modelUserContent,
     },
   ];
 
@@ -144,32 +178,23 @@ export async function runTurn({ conversationId, messages, signal }: RunTurnOptio
     model: getModelProvider(),
     system: STATIC_SYSTEM_PROMPT,
     messages: modelMessages,
-    tools: {
-      web_search: webSearchTool,
-    },
+    tools: webSearch
+      ? {
+          web_search: webSearchTool,
+        }
+      : undefined,
     stopWhen: isStepCount(3),
-    prepareStep: ({ stepNumber }) => {
-      // Pure recall questions ("What did I ask you on 3 November?") must answer
-      // with exact question(s) and their times WITHOUT web search.
-      if (route.isPureRecall) {
-        return {
-          providerOptions: effort('low'),
-          toolChoice: 'none',
-        };
-      }
-
-      // Step 0: low effort to generate search queries (or quick direct answer)
-      // Step >= 2: toolChoice 'none' to force final answer while keeping tools in schema for prompt caching
-      const effortLevel = stepNumber === 0 ? 'low' : 'low';
+    prepareStep: () => {
+      // Note: Meta Model API only supports tool_choice: "auto".
+      // "none", "required", and named function choices throw 400 invalid_request_error.
       return {
-        providerOptions: effort(effortLevel),
-        toolChoice: stepNumber >= 2 ? 'none' : 'auto',
+        providerOptions: effort('low'),
+        toolChoice: 'auto',
       };
     },
     maxOutputTokens: 1500,
     maxRetries: 2,
     abortSignal: signal,
-    experimental_transform: smoothStream({ chunking: 'word' }),
     onFinish: async ({ text, finishReason, usage }) => {
       if (!text || text.trim().length === 0) {
         return;
@@ -209,6 +234,7 @@ export async function runTurn({ conversationId, messages, signal }: RunTurnOptio
           tokens_out: usage?.outputTokens,
           tokens_reasoning: (usage as unknown as { reasoningTokens?: number })?.reasoningTokens ?? 0,
           tavily_credits: totalTavilyCredits,
+          userId,
         }
       );
 

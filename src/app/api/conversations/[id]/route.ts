@@ -1,4 +1,10 @@
-import { getConversationById, renameConversation, deleteConversation } from '@/lib/db';
+import {
+  getConversationById,
+  renameConversation,
+  deleteConversation,
+  setConversationPinned,
+} from '@/lib/db';
+import { getCurrentUser } from '@/lib/auth/session';
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
@@ -10,7 +16,8 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const conversation = getConversationById(id);
+    const user = await getCurrentUser();
+    const conversation = getConversationById(id, user?.id);
     if (!conversation) {
       return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
     }
@@ -28,14 +35,22 @@ export async function PATCH(
   try {
     const { id } = await params;
     const body = await req.json();
-    const { title } = body as { title?: string };
+    const { title, pinned } = body as { title?: string; pinned?: boolean };
 
-    if (!title || typeof title !== 'string' || title.trim().length === 0) {
-      return NextResponse.json({ error: 'Valid title is required' }, { status: 400 });
+    const user = await getCurrentUser();
+
+    if (pinned !== undefined) {
+      setConversationPinned(id, Boolean(pinned), user?.id);
     }
 
-    renameConversation(id, title.trim());
-    const updated = getConversationById(id);
+    if (title && typeof title === 'string' && title.trim().length > 0) {
+      renameConversation(id, title.trim(), user?.id);
+    }
+
+    const updated = getConversationById(id, user?.id);
+    if (!updated) {
+      return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
+    }
     return NextResponse.json(updated);
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal Server Error';
@@ -49,7 +64,8 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    deleteConversation(id);
+    const user = await getCurrentUser();
+    deleteConversation(id, user?.id);
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal Server Error';

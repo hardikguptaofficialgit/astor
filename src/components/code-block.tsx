@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Check, Copy } from 'lucide-react';
+import { MermaidDiagram } from './mermaid-diagram';
 
 interface CodeBlockProps {
   language: string;
@@ -10,6 +11,22 @@ interface CodeBlockProps {
 
 export function CodeBlock({ language, code }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
+
+  const normLang = (language || '').toLowerCase().trim();
+  const trimmedCode = code.trim();
+
+  // If the language is mermaid/diagram, or code starts with a diagram declaration, render visually
+  const isDiagram =
+    normLang === 'mermaid' ||
+    normLang === 'diagram' ||
+    normLang === 'flowchart' ||
+    /^(?:graph\s+[A-Z]{2}|flowchart\s+[A-Z]{2}|sequenceDiagram|classDiagram|stateDiagram(?:-v2)?|erDiagram|gantt|pie|gitGraph)\b/m.test(
+      trimmedCode
+    );
+
+  if (isDiagram) {
+    return <MermaidDiagram code={trimmedCode} />;
+  }
 
   const handleCopy = async () => {
     try {
