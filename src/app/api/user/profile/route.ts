@@ -19,8 +19,11 @@ export async function GET() {
 
 export async function PATCH(req: NextRequest) {
   const { user, errorResponse } = await requireUser();
-  if (errorResponse || !user) {
+  if (errorResponse) {
     return errorResponse;
+  }
+  if (!user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {

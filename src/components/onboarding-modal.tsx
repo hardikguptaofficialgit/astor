@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { Sparkles, ArrowRight, Check, Brain, User, Compass } from 'lucide-react';
 import { AVATAR_PRESETS, UserAvatar } from './user-avatar';
-import { AstorMark } from './chat-interface';
+import { AstorMark } from './astor-mark';
 
 interface OnboardingModalProps {
   isOpen: boolean;
