@@ -42,7 +42,7 @@ Astor is a refined, monochrome AI chat assistant built with Next.js 15, Tailwind
 
 ## Architecture & Features
 
-- **Monochrome Claude-Style Design**: Faithful black-and-white redesign inspired by Claude.ai: strict neutral black/white/grey palette across light (#FFFFFF, #F7F7F7, #F0F0F0, #E5E5E5, #0A0A0A) and dark (#0A0A0A, #141414, #1F1F1F, #1A1A1A, #262626, #F5F5F5) themes with zero warm beige or color tints (red used exclusively for Delete actions).
+- **Monochrome Designed**: Faithful black-and-white redesign: strict neutral black/white/grey palette across light (#FFFFFF, #F7F7F7, #F0F0F0, #E5E5E5, #0A0A0A) and dark (#0A0A0A, #141414, #1F1F1F, #1A1A1A, #262626, #F5F5F5) themes with zero warm beige or color tints (red used exclusively for Delete actions).
 - **Brand Identity**: Custom hand-crafted SVG infinity ribbon mark (`AstorMark`) in `src/components/astor-mark.tsx`, rounded square favicon in `src/app/icon.svg`, and serif "Astor" wordmark.
 - **Editorial Typography**: Elegant serif display typography (`Newsreader`, weights 400 & 500) for time-aware greetings, assistant markdown replies (16.5px, 1.65 line height), and wordmarks, paired with `Inter` for clean UI chrome and user speech bubbles.
 - **Collapsible Sidebar (~288px)**: Smooth 200ms ease sliding sidebar with highlighted New Chat pill (shortcut `Ctrl+Shift+O`), Search command palette trigger (`Ctrl+K`), live-updating Recents list with rename and delete options, and upward account menu (Hardik) with theme selection (System/Light/Dark), keyboard shortcuts reference, and About modal. Hides completely when collapsed, leaving a top-left toggle icon. Responsive mobile drawer overlay.
