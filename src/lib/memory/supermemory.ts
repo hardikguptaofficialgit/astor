@@ -117,6 +117,52 @@ export class SupermemoryClient {
   }
 
   /**
+   * Adds an explicit user fact / memory to Supermemory.
+   * Fails open: returns success false if missing key or network error.
+   */
+  async addFact(
+    userId: string,
+    fact: string,
+    category = 'user_preference'
+  ): Promise<{ success: boolean; supermemoryId?: string }> {
+    const payload = {
+      content: `User Fact: ${fact}`,
+      containerTag: `astor_user_${userId}`,
+      metadata: {
+        userId,
+        kind: 'user_memory',
+        category,
+        ts: Date.now(),
+      },
+    };
+
+    if (!this.apiKey) {
+      return { success: false };
+    }
+
+    try {
+      const res = await this.fetchFn(`${this.baseUrl}/v4/documents`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(1500),
+      });
+
+      if (!res.ok) {
+        return { success: false };
+      }
+
+      const data = (await res.json()) as { id?: string };
+      return { success: true, supermemoryId: data?.id };
+    } catch {
+      return { success: false };
+    }
+  }
+
+  /**
    * Searches Supermemory semantically for past turns.
    * Fails open: returns [] on network error, timeout (1.5s), or missing key.
    */

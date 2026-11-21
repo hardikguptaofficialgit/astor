@@ -37,6 +37,8 @@ import {
 import { AstorMark } from './astor-mark';
 import { CodeBlock } from './code-block';
 import { Sidebar, ConversationItem } from './sidebar';
+import { OnboardingModal } from './onboarding-modal';
+import { UserAvatar } from './user-avatar';
 import { NumberedSource } from '@/lib/db';
 import { formatISTDateTime, formatISTDate } from '@/lib/utils/date';
 import type { RecalledTurn } from '@/lib/memory/recall';
@@ -506,6 +508,54 @@ export function ChatInterface({
     if (typeof window !== 'undefined' && window.innerWidth >= 768) {
       setSidebarOpen(true);
     }
+  }, []);
+
+  const [currentUser, setCurrentUser] = useState<{
+    id: string;
+    email: string;
+    name: string;
+    avatarUrl?: string | null;
+    profession?: string;
+    primaryGoals?: string[];
+    customInstructions?: string;
+    onboardingCompleted?: boolean;
+  } | null>(null);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+
+  // Fetch current user and detect if onboarding is required
+  useEffect(() => {
+    fetch('/api/auth/me')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.user) {
+          setCurrentUser(data.user);
+          if (data.user.onboardingCompleted === false) {
+            setOnboardingOpen(true);
+          }
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Listen for user updates across components
+  useEffect(() => {
+    const handleUserUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent<Record<string, unknown>>;
+      if (customEvent.detail) {
+        setCurrentUser((prev) =>
+          prev
+            ? { ...prev, ...customEvent.detail }
+            : (customEvent.detail as unknown as {
+                id: string;
+                email: string;
+                name: string;
+                avatarUrl?: string | null;
+              })
+        );
+      }
+    };
+    window.addEventListener('astor:user-updated', handleUserUpdate);
+    return () => window.removeEventListener('astor:user-updated', handleUserUpdate);
   }, []);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [userScrolledUp, setUserScrolledUp] = useState(false);
@@ -982,6 +1032,9 @@ export function ChatInterface({
               >
                 <Plus size={18} />
               </button>
+              {currentUser && (
+                <UserAvatar avatarUrl={currentUser.avatarUrl} name={currentUser.name} size={26} />
+              )}
             </div>
           </div>
         ) : (
@@ -1014,6 +1067,11 @@ export function ChatInterface({
                 >
                   Sign in
                 </Link>
+              </div>
+            )}
+            {!isGuest && currentUser && (
+              <div className="absolute top-3.5 right-4 z-30 flex items-center gap-2">
+                <UserAvatar avatarUrl={currentUser.avatarUrl} name={currentUser.name} size={28} />
               </div>
             )}
           </>
@@ -1766,6 +1824,18 @@ export function ChatInterface({
           </div>
         )}
       </main>
+
+      {/* First-time Onboarding Modal */}
+      {currentUser && (
+        <OnboardingModal
+          isOpen={onboardingOpen}
+          currentUser={currentUser}
+          onComplete={(updated) => {
+            setCurrentUser((prev) => (prev ? { ...prev, ...updated } : (updated as never)));
+            setOnboardingOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }

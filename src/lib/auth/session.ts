@@ -10,6 +10,10 @@ export interface AuthUser {
   email: string;
   name: string;
   avatarUrl?: string | null;
+  profession?: string;
+  primaryGoals?: string[];
+  customInstructions?: string;
+  onboardingCompleted?: boolean;
 }
 
 export const SESSION_COOKIE_OPTIONS = {
@@ -131,6 +135,10 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
       email: user.email,
       name: user.name,
       avatarUrl: user.avatarUrl ?? null,
+      profession: user.profession,
+      primaryGoals: user.primaryGoals,
+      customInstructions: user.customInstructions,
+      onboardingCompleted: user.onboardingCompleted ?? false,
     };
   } catch (err) {
     console.error('getCurrentUser error:', err);

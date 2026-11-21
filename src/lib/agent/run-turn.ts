@@ -18,6 +18,7 @@ import {
   getConversationById,
   NumberedSource,
   getNextMessageSeq,
+  getUserMemories,
 } from '../db';
 import { getNowIST } from '../utils/date';
 import { routeUserMessage, RouteResult } from './router';
@@ -102,11 +103,29 @@ export async function runTurn({
       ? 'recall'
       : 'normal';
 
+  // Build user personalization & memory context if userId is available
+  let userContext: string | undefined;
+  if (userId) {
+    try {
+      const memories = getUserMemories(userId);
+      const memoryLines: string[] = [];
+      if (memories.length > 0) {
+        memoryLines.push(`Known user facts & preferences:\n${memories.slice(0, 10).map((m) => `- ${m.fact}`).join('\n')}`);
+      }
+      if (memoryLines.length > 0) {
+        userContext = memoryLines.join('\n\n');
+      }
+    } catch {
+      // Fail-open on memory lookup
+    }
+  }
+
   // Per-turn volatile context appended to user message
   const turnContext = buildTurnContext({
     nowFormatted,
     mode,
     pastTurns: recallResult?.pastTurnsXml,
+    userContext,
   });
   const modelUserText = `${userText}${turnContext}`;
 

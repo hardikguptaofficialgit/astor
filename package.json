@@ -10,7 +10,7 @@
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
-    "test": "npx tsx --test src/tests/citations.test.ts src/tests/cache.test.ts src/tests/tool.test.ts src/tests/pipeline.test.ts src/tests/agent.test.ts src/tests/db.test.ts src/tests/date-resolver.test.ts src/tests/recall.test.ts src/tests/replay.test.ts src/tests/router.test.ts src/tests/supermemory.test.ts src/tests/auth-scoping.test.ts src/tests/sidebar-groups.test.ts src/tests/pin-feedback.test.ts"
+    "test": "npx tsx --test src/tests/citations.test.ts src/tests/cache.test.ts src/tests/tool.test.ts src/tests/pipeline.test.ts src/tests/agent.test.ts src/tests/db.test.ts src/tests/date-resolver.test.ts src/tests/recall.test.ts src/tests/replay.test.ts src/tests/router.test.ts src/tests/supermemory.test.ts src/tests/auth-scoping.test.ts src/tests/sidebar-groups.test.ts src/tests/pin-feedback.test.ts src/tests/user-memories.test.ts"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.93",

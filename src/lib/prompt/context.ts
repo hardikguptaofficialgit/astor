@@ -5,6 +5,7 @@ export interface TurnContextOptions {
   mode?: 'normal' | 'recall' | 'reverify';
   pastTurns?: string;
   searchesLeft?: number;
+  userContext?: string;
 }
 
 /**
@@ -17,6 +18,10 @@ export function buildTurnContext(options: TurnContextOptions = {}): string {
   const mode = options.mode || 'normal';
 
   let context = `\n\n<context now="${now}" mode="${mode}">`;
+
+  if (options.userContext) {
+    context += `\n<user_preferences_and_memory>\n${options.userContext.trim()}\n</user_preferences_and_memory>`;
+  }
 
   if (options.pastTurns) {
     context += `\n${options.pastTurns}`;

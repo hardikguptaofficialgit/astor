@@ -22,11 +22,14 @@ import {
   PinOff,
   LogIn,
   LogOut,
+  Settings,
 } from 'lucide-react';
 import { AstorMark } from './astor-mark';
 import { useTheme } from './theme-provider';
 import { SearchModal } from './search-modal';
 import { groupConversations, ConversationItem } from './sidebar-groups';
+import { UserAvatar } from './user-avatar';
+import { SettingsModal } from './settings-modal';
 
 export type { ConversationItem };
 
@@ -50,7 +53,16 @@ export function Sidebar({
   const { theme, setTheme } = useTheme();
 
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
-  const [currentUser, setCurrentUser] = useState<{ id: string; email: string; name: string } | null>(null);
+  const [currentUser, setCurrentUser] = useState<{
+    id: string;
+    email: string;
+    name: string;
+    avatarUrl?: string | null;
+    profession?: string;
+    primaryGoals?: string[];
+    customInstructions?: string;
+    onboardingCompleted?: boolean;
+  } | null>(null);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
@@ -58,6 +70,7 @@ export function Sidebar({
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [shortcutsModalOpen, setShortcutsModalOpen] = useState(false);
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
 
   const menuRef = useRef<HTMLDivElement>(null);
   const accountMenuRef = useRef<HTMLDivElement>(null);
@@ -69,6 +82,27 @@ export function Sidebar({
       onToggle();
     }
   };
+
+  // Sync user updates across windows/components
+  useEffect(() => {
+    const handleUserUpdate = (e: Event) => {
+      const customEvent = e as CustomEvent<Record<string, unknown>>;
+      if (customEvent.detail) {
+        setCurrentUser((prev) =>
+          prev
+            ? { ...prev, ...customEvent.detail }
+            : (customEvent.detail as unknown as {
+                id: string;
+                email: string;
+                name: string;
+                avatarUrl?: string | null;
+              })
+        );
+      }
+    };
+    window.addEventListener('astor:user-updated', handleUserUpdate);
+    return () => window.removeEventListener('astor:user-updated', handleUserUpdate);
+  }, []);
 
   // Fetch current user
   useEffect(() => {
@@ -589,6 +623,19 @@ export function Sidebar({
 
                 <div className="h-px bg-[var(--border)] my-1" />
 
+                {/* Settings & Memory Trigger */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAccountMenuOpen(false);
+                    setSettingsModalOpen(true);
+                  }}
+                  className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-left text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                >
+                  <Settings size={13} className="text-[var(--secondary)]" />
+                  <span>Settings & Memory</span>
+                </button>
+
                 {/* Keyboard Shortcuts Trigger */}
                 <button
                   type="button"
@@ -640,27 +687,41 @@ export function Sidebar({
             )}
 
             {/* Account Row */}
-            <button
-              type="button"
-              onClick={() => setAccountMenuOpen((v) => !v)}
-              className="flex items-center justify-between w-full p-2 rounded-lg hover:bg-[var(--hover)] transition-colors text-left"
-              aria-label="Account menu"
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-7 h-7 rounded-full bg-[var(--text)] text-[var(--bg)] font-sans text-xs font-medium flex items-center justify-center shrink-0">
-                  {(currentUser?.name || 'A')[0].toUpperCase()}
-                </div>
+            <div className="flex items-center justify-between w-full p-2 rounded-lg hover:bg-[var(--hover)] transition-colors">
+              <button
+                type="button"
+                onClick={() => setAccountMenuOpen((v) => !v)}
+                className="flex items-center gap-2.5 min-w-0 flex-1 text-left"
+                aria-label="Account menu"
+              >
+                <UserAvatar avatarUrl={currentUser?.avatarUrl} name={currentUser?.name} size={28} />
                 <div className="flex flex-col text-left min-w-0 leading-tight">
                   <span className="text-[13px] font-medium text-[var(--text)] truncate">
                     {currentUser?.name || 'Guest user'}
                   </span>
-                  <span className="text-[11px] text-[var(--secondary)]">
-                    {currentUser ? 'Astor Member' : 'Local storage'}
+                  <span className="text-[11px] text-[var(--secondary)] truncate">
+                    {currentUser?.profession || (currentUser ? 'Astor Member' : 'Local storage')}
                   </span>
                 </div>
+              </button>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setSettingsModalOpen(true)}
+                  title="Settings & Memory"
+                  className="p-1.5 rounded-md text-[var(--secondary)] hover:text-[var(--text)] hover:bg-[var(--hover)] transition-colors"
+                >
+                  <Settings size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAccountMenuOpen((v) => !v)}
+                  className="p-1 rounded-md text-[var(--secondary)] hover:text-[var(--text)] transition-colors"
+                >
+                  <ChevronDown size={14} />
+                </button>
               </div>
-              <ChevronDown size={14} className="text-[var(--secondary)] shrink-0" />
-            </button>
+            </div>
           </div>
         </div>
       </aside>
@@ -758,6 +819,17 @@ export function Sidebar({
           </div>
         </div>
       )}
+
+      {/* Settings & Memory Modal */}
+      <SettingsModal
+        isOpen={settingsModalOpen}
+        onClose={() => setSettingsModalOpen(false)}
+        currentUser={currentUser}
+        onUserUpdate={(updated) => {
+          setCurrentUser((prev) => (prev ? { ...prev, ...updated } : (updated as never)));
+          window.dispatchEvent(new CustomEvent('astor:user-updated', { detail: updated }));
+        }}
+      />
     </>
   );
 }

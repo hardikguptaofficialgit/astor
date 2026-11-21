@@ -213,6 +213,16 @@ export function getDb(customPath?: string): DatabaseSync {
       last_error TEXT,
       supermemory_id TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS user_memories (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      fact TEXT NOT NULL,
+      category TEXT DEFAULT 'general',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_memories_user ON user_memories(user_id);
   `);
 
   // Migrate existing tables safely
@@ -1008,4 +1018,70 @@ export function getVerification(messageId: string): Verification | null {
     verdict: row.verdict as string,
     created_at: Number(row.created_at),
   };
+}
+
+export interface UserMemoryItem {
+  id: string;
+  user_id: string;
+  fact: string;
+  category?: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export function getUserMemories(userId: string): UserMemoryItem[] {
+  if (!userId) return [];
+  const db = getDb();
+  const stmt = db.prepare(
+    'SELECT id, user_id, fact, category, created_at, updated_at FROM user_memories WHERE user_id = ? ORDER BY created_at DESC'
+  );
+  const rows = stmt.all(userId) as Record<string, unknown>[];
+  return rows.map((r) => ({
+    id: r.id as string,
+    user_id: r.user_id as string,
+    fact: r.fact as string,
+    category: (r.category as string) || 'general',
+    created_at: Number(r.created_at),
+    updated_at: Number(r.updated_at),
+  }));
+}
+
+export function saveUserMemory(
+  id: string,
+  userId: string,
+  fact: string,
+  category = 'general'
+): UserMemoryItem {
+  const db = getDb();
+  const now = Date.now();
+  const stmt = db.prepare(`
+    INSERT INTO user_memories (id, user_id, fact, category, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET user_id = excluded.user_id, fact = excluded.fact, category = excluded.category, updated_at = excluded.updated_at
+  `);
+  stmt.run(id, userId, fact, category, now, now);
+  return {
+    id,
+    user_id: userId,
+    fact,
+    category,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+export function deleteUserMemory(id: string, userId: string): boolean {
+  if (!id || !userId) return false;
+  const db = getDb();
+  const stmt = db.prepare('DELETE FROM user_memories WHERE id = ? AND user_id = ?');
+  stmt.run(id, userId);
+  return true;
+}
+
+export function clearUserMemories(userId: string): boolean {
+  if (!userId) return false;
+  const db = getDb();
+  const stmt = db.prepare('DELETE FROM user_memories WHERE user_id = ?');
+  stmt.run(userId);
+  return true;
 }
